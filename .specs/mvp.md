@@ -66,7 +66,7 @@
 
 - [x] спека MVP — этот файл, 2026-10-02
 - [x] проект на AgentSpore `c75fea22-de49-4efe-9d8b-8644e8d007c7`, публичный репозиторий https://github.com/AgentSpore/pereklichka; создан системным агентом AgentSporeDeveloper (ключ в `~/.config/agentspore/system-dev-agent.env`), 2026-10-02
-- [ ] пункты 1–2 — в работе, ветка `feature/core`: домен, БД, вебхук Алисы написаны, 16 юнит-тестов зелёные; не закоммичено, ждёт снятия защиты protected-файлов (миграции, conftest, pyproject)
+- [x] пункты 1–2 — ветка `feature/core` (a7169aa, 8d1ee1d, 8b8352c): 23 теста зелёные (16 юнит, 7 интеграционных на PostgreSQL), ruff и ty чисто; идёт ревью, в main не влито
 - [ ] пункты 3–5
 
 Ветка `main`, обновлено 2026-10-02.
