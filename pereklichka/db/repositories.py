@@ -1,10 +1,11 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pereklichka.db.models import CheckInRow, FamilyRow, LinkCodeRow, WardRow
+from pereklichka.db.models import CheckInRow, FamilyRow, LinkAttemptRow, LinkCodeRow, WardRow
 from pereklichka.domain.checkin import CheckIn
 from pereklichka.domain.family import Family, LinkCode, Ward
 
@@ -30,11 +31,13 @@ class WardRepository:
         row = await self._session.scalar(select(WardRow).where(WardRow.device_id == device_id))
         return None if row is None else self._to_ward(row)
 
-    async def link_device(self, ward_id: UUID, device_id: str, consent_at: datetime) -> None:
+    async def link_device(
+        self, ward_id: UUID, device_id: str, consent_at: datetime, consent_version: str
+    ) -> None:
         await self._session.execute(
             update(WardRow)
             .where(WardRow.id == ward_id)
-            .values(device_id=device_id, consent_at=consent_at)
+            .values(device_id=device_id, consent_at=consent_at, consent_version=consent_version)
         )
 
     @staticmethod
@@ -47,16 +50,33 @@ class WardRepository:
             timezone=row.timezone,
             device_id=row.device_id,
             consent_at=row.consent_at,
+            consent_version=row.consent_version,
         )
 
 
 class LinkCodeRepository:
+    ISSUE_ATTEMPTS = 5
+
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def add(self, link_code: LinkCode) -> None:
-        self._session.add(LinkCodeRow(**vars(link_code)))
-        await self._session.flush()
+    async def issue(self, ward_id: UUID, now: datetime) -> LinkCode:
+        """New code for the ward; expired unused codes are dropped so their digits free up."""
+        await self._session.execute(
+            delete(LinkCodeRow).where(LinkCodeRow.used_at.is_(None), LinkCodeRow.expires_at <= now)
+        )
+        for _ in range(self.ISSUE_ATTEMPTS - 1):
+            try:
+                return await self._insert(ward_id, now)
+            except IntegrityError:
+                continue
+        return await self._insert(ward_id, now)
+
+    async def _insert(self, ward_id: UUID, now: datetime) -> LinkCode:
+        link_code = LinkCode.issue(ward_id, now)
+        async with self._session.begin_nested():
+            self._session.add(LinkCodeRow(**vars(link_code)))
+        return link_code
 
     async def find_active(self, code: str, now: datetime) -> LinkCode | None:
         row = await self._session.scalar(
@@ -84,6 +104,23 @@ class LinkCodeRepository:
         )
 
 
+class LinkAttemptRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_failure(self, application_id: str, at: datetime) -> None:
+        self._session.add(LinkAttemptRow(application_id=application_id, at=at))
+        await self._session.flush()
+
+    async def failures_since(self, application_id: str, since: datetime) -> int:
+        count = await self._session.scalar(
+            select(func.count()).where(
+                LinkAttemptRow.application_id == application_id, LinkAttemptRow.at > since
+            )
+        )
+        return count or 0
+
+
 class CheckInRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -91,6 +128,19 @@ class CheckInRepository:
     async def add(self, checkin: CheckIn) -> None:
         self._session.add(CheckInRow(**vars(checkin)))
         await self._session.flush()
+
+    async def set_meds(self, checkin_id: UUID, ward_id: UUID, meds_taken: bool | None) -> None:
+        await self._answer(checkin_id, ward_id, meds_taken=meds_taken)
+
+    async def set_needs(self, checkin_id: UUID, ward_id: UUID, needs: str | None) -> None:
+        await self._answer(checkin_id, ward_id, needs=needs)
+
+    async def _answer(self, checkin_id: UUID, ward_id: UUID, **values: object) -> None:
+        await self._session.execute(
+            update(CheckInRow)
+            .where(CheckInRow.id == checkin_id, CheckInRow.ward_id == ward_id)
+            .values(**values)
+        )
 
     async def for_ward(self, ward_id: UUID) -> list[CheckIn]:
         rows = await self._session.scalars(

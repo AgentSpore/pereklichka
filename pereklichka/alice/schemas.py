@@ -26,10 +26,6 @@ class Utterance(BaseModel):
     nlu: Nlu = Field(default_factory=Nlu)
 
 
-class User(BaseModel):
-    user_id: str
-
-
 class Application(BaseModel):
     application_id: str
 
@@ -38,7 +34,7 @@ class Session(BaseModel):
     new: bool
     session_id: str
     message_id: int
-    user: User | None = None
+    skill_id: str
     application: Application
 
 
@@ -54,15 +50,12 @@ class AliceRequest(BaseModel):
 
     @property
     def device_id(self) -> str:
-        """Yandex account when signed in, otherwise the app instance; both stable per skill."""
-        if self.session.user is not None:
-            return self.session.user.user_id
+        """The speaker itself; session.user.user_id is one per account across all its devices."""
         return self.session.application.application_id
 
 
 class Reply(BaseModel):
     text: str
-    tts: str | None = None
     end_session: bool
 
 

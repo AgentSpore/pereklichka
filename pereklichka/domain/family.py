@@ -20,6 +20,7 @@ class Ward:
     timezone: str
     device_id: str | None = None
     consent_at: datetime | None = None
+    consent_version: str | None = None
     id: UUID = field(default_factory=uuid4)
 
 
@@ -36,6 +37,7 @@ class LinkCode:
     """One-time code a relative reads out to bind a speaker to a ward."""
 
     TTL: ClassVar[timedelta] = timedelta(minutes=15)
+    MAX_FAILED_ATTEMPTS: ClassVar[int] = 5
 
     ward_id: UUID
     code: str
@@ -48,6 +50,3 @@ class LinkCode:
         return cls(
             ward_id=ward_id, code=f"{secrets.randbelow(10**6):06d}", expires_at=now + cls.TTL
         )
-
-    def is_active(self, now: datetime) -> bool:
-        return self.used_at is None and now < self.expires_at

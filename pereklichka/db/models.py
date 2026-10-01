@@ -27,6 +27,7 @@ class WardRow(Base):
     timezone: Mapped[str] = mapped_column(String(64))
     device_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     consent_at: Mapped[datetime | None]
+    consent_version: Mapped[str | None] = mapped_column(String(64))
 
 
 class RelativeRow(Base):
@@ -54,6 +55,17 @@ class LinkCodeRow(Base):
     code: Mapped[str] = mapped_column(String(6))
     expires_at: Mapped[datetime]
     used_at: Mapped[datetime | None]
+
+
+class LinkAttemptRow(Base):
+    """A failed link-code attempt, counted to stop code guessing from one speaker."""
+
+    __tablename__ = "link_attempts"
+    __table_args__ = (Index("ix_link_attempts_application_at", "application_id", "at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    application_id: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime]
 
 
 class CheckInRow(Base):

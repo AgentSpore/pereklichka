@@ -4,7 +4,7 @@ from alembic import context
 from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from pereklichka.config import Settings
+from pereklichka.config import DatabaseSettings
 from pereklichka.db.models import Base
 
 
@@ -15,7 +15,7 @@ def _do_run(connection: Connection) -> None:
 
 
 async def _run() -> None:
-    url = context.config.get_main_option("sqlalchemy.url") or Settings().database_url
+    url = context.config.get_main_option("sqlalchemy.url") or DatabaseSettings().database_url
     engine = create_async_engine(url)
     async with engine.connect() as connection:
         await connection.run_sync(_do_run)

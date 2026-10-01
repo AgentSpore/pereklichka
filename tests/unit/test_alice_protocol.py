@@ -4,17 +4,24 @@ from fastapi.testclient import TestClient
 from pereklichka.alice.answers import extract_code, yes_or_no
 from pereklichka.alice.schemas import AliceRequest
 from pereklichka.app import create_app
-from tests.alice_protocol import APPLICATION_ID, USER_ID, number_entity, utterance
+from pereklichka.config import Settings
+from tests.alice_protocol import APPLICATION_ID, SKILL_ID, number_entity, utterance
 
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(create_app("postgresql+asyncpg://unused@localhost:1/unused"))
+    settings = Settings(database_url="postgresql+asyncpg://unused@localhost:1/x", skill_id=SKILL_ID)
+    return TestClient(create_app(settings))
 
 
-def test_device_is_yandex_user_when_signed_in_else_application() -> None:
-    assert AliceRequest.model_validate(utterance("", signed_in=True)).device_id == USER_ID
-    assert AliceRequest.model_validate(utterance("")).device_id == APPLICATION_ID
+def test_device_is_the_application_even_for_a_signed_in_account() -> None:
+    first = AliceRequest.model_validate(utterance("", signed_in=True))
+    second = AliceRequest.model_validate(
+        utterance("", signed_in=True, application_id="other-speaker")
+    )
+
+    assert first.device_id == APPLICATION_ID
+    assert second.device_id == "other-speaker"
 
 
 @pytest.mark.parametrize(
@@ -32,7 +39,6 @@ def test_device_is_yandex_user_when_signed_in_else_application() -> None:
 )
 def test_code_is_read_from_numbers_or_digits(command: str, entities: list) -> None:
     request = AliceRequest.model_validate(utterance(command, entities=entities)).request
-    assert extract_code(request) in {"123456", "012345"}
     assert extract_code(request) == command.removeprefix("привязать код ").replace(" ", "")
 
 
@@ -43,7 +49,17 @@ def test_no_code_in_plain_phrase() -> None:
 
 @pytest.mark.parametrize(
     ("command", "expected"),
-    [("да", True), ("да конечно", True), ("нет", False), ("не приняла", False), ("забыла", None)],
+    [
+        ("да", True),
+        ("да конечно", True),
+        ("да не забыла", True),
+        ("да приняла не беспокойтесь", True),
+        ("да не против", True),
+        ("нет", False),
+        ("не приняла", False),
+        ("да нет", None),
+        ("забыла", None),
+    ],
 )
 def test_yes_or_no(command: str, expected: bool | None) -> None:
     request = AliceRequest.model_validate(utterance(command)).request
@@ -51,14 +67,21 @@ def test_yes_or_no(command: str, expected: bool | None) -> None:
 
 
 def test_ping_is_answered_without_database(client: TestClient) -> None:
-    body = utterance("ping")
-    response = client.post("/alice", json=body)
+    response = client.post("/alice", json=utterance("ping"))
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["version"] == "1.0"
     assert payload["response"]["end_session"] is True
     assert payload["response"]["text"]
+    assert "tts" not in payload["response"]
+
+
+def test_foreign_skill_is_rejected(client: TestClient) -> None:
+    body = utterance("ping")
+    body["session"]["skill_id"] = "someone-else"
+
+    assert client.post("/alice", json=body).status_code == 403
 
 
 def test_health(client: TestClient) -> None:

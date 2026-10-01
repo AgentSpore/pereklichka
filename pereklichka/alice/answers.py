@@ -1,11 +1,13 @@
 import re
+from itertools import pairwise
 
 from pereklichka.alice.schemas import Utterance
 
 CODE_LENGTH = 6
 YES = frozenset({"да", "ага", "конечно", "согласен", "согласна", "принял", "приняла"})
-NO = frozenset({"нет", "не", "неа", "ничего"})
-NOTHING = NO | {"мне", "нужно", "надо", "спасибо", "всё", "все", "есть"}
+NEGATION = "не"
+NO = frozenset({"нет", "неа"})
+NOTHING = NO | {NEGATION, "ничего", "мне", "нужно", "надо", "спасибо", "всё", "все", "есть"}
 DIGITS = re.compile(r"\d+")
 
 
@@ -23,12 +25,17 @@ def extract_code(request: Utterance) -> str | None:
 
 
 def yes_or_no(request: Utterance) -> bool | None:
-    words = set(request.nlu.tokens or request.command.split())
-    if words & NO:
-        return False
-    if words & YES:
-        return True
-    return None
+    """Yes, no, or None when unclear or mixed; "не" negates only the word right after it."""
+    words = request.nlu.tokens or request.command.split()
+    yes = no = False
+    for previous, word in pairwise(["", *words]):
+        if word in YES and previous == NEGATION:
+            no = True
+        elif word in YES:
+            yes = True
+        elif word in NO:
+            no = True
+    return None if yes == no else yes
 
 
 def nothing_needed(request: Utterance) -> bool:

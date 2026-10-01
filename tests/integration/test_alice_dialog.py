@@ -3,10 +3,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pereklichka.alice.dialog import CONSENT_VERSION
+from pereklichka.alice.router import get_session
 from pereklichka.app import create_app
+from pereklichka.config import Settings
 from pereklichka.db.repositories import (
     CheckInRepository,
     FamilyRepository,
@@ -14,17 +18,23 @@ from pereklichka.db.repositories import (
     WardRepository,
 )
 from pereklichka.domain.family import Family, LinkCode, Ward
-from tests.alice_protocol import APPLICATION_ID, number_entity, utterance
+from tests.alice_protocol import APPLICATION_ID, SKILL_ID, number_entity, utterance
 
 
 @pytest.fixture
-async def client(
+async def app(
     database_url: str, sessionmaker: async_sessionmaker[AsyncSession]
-) -> AsyncIterator[AsyncClient]:
-    app = create_app(database_url)
-    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
-        yield client
+) -> AsyncIterator[FastAPI]:
+    app = create_app(Settings(database_url=database_url, skill_id=SKILL_ID))
+    yield app
     await app.state.sessionmaker.kw["bind"].dispose()
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
 
 @pytest.fixture
@@ -39,8 +49,7 @@ async def ward(session: AsyncSession) -> Ward:
 
 @pytest.fixture
 async def link_code(session: AsyncSession, ward: Ward) -> LinkCode:
-    code = LinkCode.issue(ward.id, datetime.now(UTC))
-    await LinkCodeRepository(session).add(code)
+    code = await LinkCodeRepository(session).issue(ward.id, datetime.now(UTC))
     await session.commit()
     return code
 
@@ -69,6 +78,7 @@ async def test_unknown_speaker_is_linked_after_consent(
     assert linked is not None
     assert linked.id == ward.id
     assert linked.consent_at is not None
+    assert linked.consent_version == CONSENT_VERSION
 
 
 async def test_refused_consent_links_nothing(
@@ -93,7 +103,9 @@ async def test_wrong_code_is_refused(client: AsyncClient, link_code: LinkCode) -
 async def test_linked_speaker_checks_in(
     client: AsyncClient, session: AsyncSession, ward: Ward
 ) -> None:
-    await WardRepository(session).link_device(ward.id, APPLICATION_ID, datetime.now(UTC))
+    await WardRepository(session).link_device(
+        ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
     await session.commit()
 
     greeting = await say(client, utterance("", new=True))
@@ -109,3 +121,53 @@ async def test_linked_speaker_checks_in(
         True,
         "купите хлеба",
     )
+
+
+class FailingCommitSession(AsyncSession):
+    async def commit(self) -> None:
+        raise ConnectionError("commit lost")
+
+
+async def test_failed_commit_is_not_reported_as_success(
+    app: FastAPI, client: AsyncClient, session: AsyncSession, link_code: LinkCode
+) -> None:
+    maker = async_sessionmaker(app.state.sessionmaker.kw["bind"], class_=FailingCommitSession)
+
+    async def failing_session() -> AsyncIterator[AsyncSession]:
+        async with maker() as failing:
+            yield failing
+
+    asked = await say(client, utterance(f"привязать код {link_code.code}", new=True))
+    app.dependency_overrides[get_session] = failing_session
+    reply = await client.post("/alice", json=utterance("да", state=asked["session_state"]))
+
+    assert reply.status_code == 500
+    assert await WardRepository(session).by_device(APPLICATION_ID) is None
+
+
+async def test_wellbeing_is_kept_when_the_speaker_falls_silent(
+    client: AsyncClient, session: AsyncSession, ward: Ward
+) -> None:
+    await WardRepository(session).link_device(
+        ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
+    await session.commit()
+
+    greeting = await say(client, utterance("", new=True))
+    await say(client, utterance("мне плохо", state=greeting["session_state"]))
+
+    [checkin] = await CheckInRepository(session).for_ward(ward.id)
+    assert (checkin.wellbeing, checkin.meds_taken, checkin.needs) == ("мне плохо", None, None)
+
+
+async def test_code_guessing_is_stopped_after_five_failures(
+    client: AsyncClient, link_code: LinkCode
+) -> None:
+    wrong = "000000" if link_code.code != "000000" else "999999"
+    for _ in range(5):
+        await say(client, utterance(f"привязать код {wrong}", new=True))
+
+    blocked = await say(client, utterance(f"привязать код {link_code.code}", new=True))
+
+    assert "согласны" not in blocked["response"]["text"]
+    assert blocked["session_state"] == {}
