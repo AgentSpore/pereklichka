@@ -1,0 +1,67 @@
+from datetime import datetime
+from typing import Any, ClassVar
+from uuid import UUID
+
+from sqlalchemy import BigInteger, ForeignKey, Index, SmallInteger, String, text
+from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    type_annotation_map: ClassVar[dict[Any, Any]] = {datetime: TIMESTAMP(timezone=True)}
+
+
+class FamilyRow(Base):
+    __tablename__ = "families"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+
+
+class WardRow(Base):
+    __tablename__ = "wards"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(100))
+    checkin_hour: Mapped[int] = mapped_column(SmallInteger)
+    timezone: Mapped[str] = mapped_column(String(64))
+    device_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    consent_at: Mapped[datetime | None]
+
+
+class RelativeRow(Base):
+    __tablename__ = "relatives"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    alert_order: Mapped[int] = mapped_column(SmallInteger)
+
+
+class LinkCodeRow(Base):
+    __tablename__ = "link_codes"
+    __table_args__ = (
+        Index(
+            "uq_link_codes_unused_code",
+            "code",
+            unique=True,
+            postgresql_where=text("used_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    ward_id: Mapped[UUID] = mapped_column(ForeignKey("wards.id", ondelete="CASCADE"))
+    code: Mapped[str] = mapped_column(String(6))
+    expires_at: Mapped[datetime]
+    used_at: Mapped[datetime | None]
+
+
+class CheckInRow(Base):
+    __tablename__ = "check_ins"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    ward_id: Mapped[UUID] = mapped_column(ForeignKey("wards.id", ondelete="CASCADE"), index=True)
+    at: Mapped[datetime]
+    wellbeing: Mapped[str] = mapped_column(String(1024))
+    meds_taken: Mapped[bool | None]
+    needs: Mapped[str | None] = mapped_column(String(1024))
