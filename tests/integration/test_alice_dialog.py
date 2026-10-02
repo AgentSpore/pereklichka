@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from pereklichka.config import Settings
 from pereklichka.db.repositories import (
     CheckInRepository,
     FamilyRepository,
+    LinkAttemptRepository,
     LinkCodeRepository,
     WardRepository,
 )
@@ -171,3 +173,34 @@ async def test_code_guessing_is_stopped_after_five_failures(
 
     assert "согласны" not in blocked["response"]["text"]
     assert blocked["session_state"] == {}
+
+
+async def test_code_guessing_from_many_speakers_hits_the_global_cap(
+    client: AsyncClient, session: AsyncSession, link_code: LinkCode
+) -> None:
+    attempts = LinkAttemptRepository(session)
+    now = datetime.now(UTC)
+    for n in range(LinkCode.MAX_FAILED_ATTEMPTS_TOTAL):
+        await attempts.add_failure(f"forged-{n}", now)
+    await session.commit()
+
+    blocked = await say(
+        client,
+        utterance(f"привязать код {link_code.code}", new=True, application_id="fresh-speaker"),
+    )
+
+    assert "согласны" not in blocked["response"]["text"]
+
+
+async def test_answer_to_a_missing_checkin_is_an_error_not_a_goodbye(
+    client: AsyncClient, session: AsyncSession, ward: Ward
+) -> None:
+    await WardRepository(session).link_device(
+        ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
+    await session.commit()
+
+    state = {"step": "meds", "checkin": str(uuid4())}
+    response = await client.post("/alice", json=utterance("да", state=state))
+
+    assert response.status_code == 500

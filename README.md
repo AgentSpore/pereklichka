@@ -9,9 +9,12 @@
 ```bash
 uv sync
 export DATABASE_URL="postgresql+asyncpg://<пользователь>:<пароль>@localhost:5432/pereklichka"
+export SKILL_ID="<id навыка из консоли Диалогов>"
 uv run alembic upgrade head      # схема только через миграции
 uv run python -m pereklichka     # сервис на :8000: POST /alice, GET /health
 ```
+
+Запросы с чужим `session.skill_id` вебхук отклоняет с кодом 403.
 
 Проверки:
 

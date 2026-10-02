@@ -6,7 +6,7 @@ from alembic.migration import MigrationContext
 from sqlalchemy import Connection, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pereklichka.db.models import Base, LinkCodeRow
+from pereklichka.db.models import Base, LinkAttemptRow, LinkCodeRow
 from pereklichka.db.repositories import (
     CheckInRepository,
     FamilyRepository,
@@ -92,7 +92,10 @@ async def test_failed_attempts_are_counted_per_device_in_window(session: AsyncSe
     await attempts.add_failure("dev-1", NOW)
     await attempts.add_failure("dev-2", NOW)
 
-    assert await attempts.failures_since("dev-1", NOW - timedelta(minutes=15)) == 1
+    since = NOW - timedelta(minutes=15)
+    assert await attempts.failures_since("dev-1", since) == 1
+    assert await attempts.failures_since(None, since) == 2
+    assert await session.scalar(select(func.count()).select_from(LinkAttemptRow)) == 2
 
 
 async def test_checkin_is_stored_then_answered(session: AsyncSession, ward: Ward) -> None:

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,20 +105,35 @@ class LinkCodeRepository:
 
 
 class LinkAttemptRepository:
+    # Any constant works: one transaction-scoped lock serialises every link-code check.
+    LOCK_KEY = 0x6C696E6B
+
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def lock(self) -> None:
+        """Hold until commit, so concurrent guesses cannot all pass the count before inserting."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": self.LOCK_KEY}
+        )
+
     async def add_failure(self, application_id: str, at: datetime) -> None:
+        await self._session.execute(
+            delete(LinkAttemptRow).where(LinkAttemptRow.at <= at - LinkCode.TTL)
+        )
         self._session.add(LinkAttemptRow(application_id=application_id, at=at))
         await self._session.flush()
 
-    async def failures_since(self, application_id: str, since: datetime) -> int:
-        count = await self._session.scalar(
-            select(func.count()).where(
-                LinkAttemptRow.application_id == application_id, LinkAttemptRow.at > since
-            )
-        )
-        return count or 0
+    async def failures_since(self, application_id: str | None, since: datetime) -> int:
+        """Failures after `since` for one speaker, or for all speakers when None."""
+        query = select(func.count()).where(LinkAttemptRow.at > since)
+        if application_id is not None:
+            query = query.where(LinkAttemptRow.application_id == application_id)
+        return await self._session.scalar(query) or 0
+
+
+class CheckInNotFoundError(LookupError):
+    """The session points at a check-in this ward does not own; the answer must not be lost."""
 
 
 class CheckInRepository:
@@ -136,11 +151,14 @@ class CheckInRepository:
         await self._answer(checkin_id, ward_id, needs=needs)
 
     async def _answer(self, checkin_id: UUID, ward_id: UUID, **values: object) -> None:
-        await self._session.execute(
+        updated = await self._session.scalar(
             update(CheckInRow)
             .where(CheckInRow.id == checkin_id, CheckInRow.ward_id == ward_id)
             .values(**values)
+            .returning(CheckInRow.id)
         )
+        if updated is None:
+            raise CheckInNotFoundError(checkin_id)
 
     async def for_ward(self, ward_id: UUID) -> list[CheckIn]:
         rows = await self._session.scalars(

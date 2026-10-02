@@ -67,14 +67,19 @@ class Dialog:
         code = extract_code(request.request)
         if code is None:
             return self._say(HOW_TO_LINK)
-        since = self._now - LinkCode.TTL
-        failures = await self._attempts.failures_since(request.device_id, since)
-        if failures >= LinkCode.MAX_FAILED_ATTEMPTS:
+        if await self._too_many_failures(request.device_id):
             return self._say(TOO_MANY_ATTEMPTS, end=True)
         if await self._codes.find_active(code, self._now) is None:
             await self._attempts.add_failure(request.device_id, self._now)
             return self._say(BAD_CODE)
         return self._say(CONSENT, step=Step.CONSENT, code=code)
+
+    async def _too_many_failures(self, device_id: str) -> bool:
+        await self._attempts.lock()
+        since = self._now - LinkCode.TTL
+        own = await self._attempts.failures_since(device_id, since)
+        total = await self._attempts.failures_since(None, since)
+        return own >= LinkCode.MAX_FAILED_ATTEMPTS or total >= LinkCode.MAX_FAILED_ATTEMPTS_TOTAL
 
     async def _consent(self, request: AliceRequest, code: str) -> AliceResponse:
         answer = yes_or_no(request.request)

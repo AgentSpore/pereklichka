@@ -38,6 +38,7 @@ class LinkCode:
 
     TTL: ClassVar[timedelta] = timedelta(minutes=15)
     MAX_FAILED_ATTEMPTS: ClassVar[int] = 5
+    MAX_FAILED_ATTEMPTS_TOTAL: ClassVar[int] = 30
 
     ward_id: UUID
     code: str
