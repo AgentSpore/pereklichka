@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -8,7 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from pereklichka.alice.dialog import CONSENT_VERSION
+from pereklichka.alice.dialog import CONSENT_VERSION, TOO_MANY_ATTEMPTS
 from pereklichka.alice.router import get_session
 from pereklichka.app import create_app
 from pereklichka.config import Settings
@@ -175,21 +176,36 @@ async def test_code_guessing_is_stopped_after_five_failures(
     assert blocked["session_state"] == {}
 
 
-async def test_code_guessing_from_many_speakers_hits_the_global_cap(
+async def test_global_cap_revokes_active_codes_and_refuses_new_speakers(
     client: AsyncClient, session: AsyncSession, link_code: LinkCode
 ) -> None:
     attempts = LinkAttemptRepository(session)
     now = datetime.now(UTC)
-    for n in range(LinkCode.MAX_FAILED_ATTEMPTS_TOTAL):
+    for n in range(LinkCode.MAX_FAILED_ATTEMPTS_TOTAL - 1):
         await attempts.add_failure(f"forged-{n}", now)
     await session.commit()
+    wrong = "000000" if link_code.code != "000000" else "999999"
 
+    await say(client, utterance(f"привязать код {wrong}", new=True, application_id="last-guess"))
     blocked = await say(
         client,
         utterance(f"привязать код {link_code.code}", new=True, application_id="fresh-speaker"),
     )
 
-    assert "согласны" not in blocked["response"]["text"]
+    assert blocked["response"]["text"] == TOO_MANY_ATTEMPTS
+    assert await LinkCodeRepository(session).find_active(link_code.code, now) is None
+
+
+async def test_parallel_guesses_from_one_speaker_stop_at_the_limit(
+    client: AsyncClient, link_code: LinkCode
+) -> None:
+    wrong = "000000" if link_code.code != "000000" else "999999"
+    body = utterance(f"привязать код {wrong}", new=True)
+
+    replies = await asyncio.gather(*(say(client, body) for _ in range(12)))
+
+    answered = [r for r in replies if r["response"]["text"] != TOO_MANY_ATTEMPTS]
+    assert len(answered) == LinkCode.MAX_FAILED_ATTEMPTS
 
 
 async def test_answer_to_a_missing_checkin_is_an_error_not_a_goodbye(

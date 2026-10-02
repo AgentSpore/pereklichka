@@ -4,6 +4,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.alice.answers import extract_code, nothing_needed, yes_or_no
@@ -27,7 +28,7 @@ CONSENT = (
     "ваши ответы родным в Телеграм. Голос не записывается. Вы согласны? Скажите да или нет."
 )
 CONSENT_VERSION = hashlib.sha256(CONSENT.encode()).hexdigest()
-TOO_MANY_ATTEMPTS = "Слишком много неверных кодов. Попробуйте ещё раз через пятнадцать минут."
+TOO_MANY_ATTEMPTS = "Сейчас привязка недоступна, попробуйте через пятнадцать минут."
 SAY_YES_OR_NO = "Скажите, пожалуйста, да или нет."
 LINKED = "Готово, колонка привязана. Утром скажите: Алиса, запусти Перекличку."
 DECLINED = "Хорошо, я ничего не сохраняю. До свидания!"
@@ -70,16 +71,26 @@ class Dialog:
         if await self._too_many_failures(request.device_id):
             return self._say(TOO_MANY_ATTEMPTS, end=True)
         if await self._codes.find_active(code, self._now) is None:
-            await self._attempts.add_failure(request.device_id, self._now)
+            await self._record_failure(request.device_id)
             return self._say(BAD_CODE)
         return self._say(CONSENT, step=Step.CONSENT, code=code)
 
     async def _too_many_failures(self, device_id: str) -> bool:
+        # INVARIANT(pereklichka-link): serialises count→insert;
+        # without it parallel guesses pass the cap
         await self._attempts.lock()
         since = self._now - LinkCode.TTL
         own = await self._attempts.failures_since(device_id, since)
         total = await self._attempts.failures_since(None, since)
         return own >= LinkCode.MAX_FAILED_ATTEMPTS or total >= LinkCode.MAX_FAILED_ATTEMPTS_TOTAL
+
+    async def _record_failure(self, device_id: str) -> None:
+        await self._attempts.add_failure(device_id, self._now)
+        total = await self._attempts.failures_since(None, self._now - LinkCode.TTL)
+        # The cap refuses further guesses before they are counted, so it is crossed once per window.
+        if total == LinkCode.MAX_FAILED_ATTEMPTS_TOTAL:
+            revoked = await self._codes.revoke_active(self._now)
+            logger.warning("Link-code guessing cap reached, {} active codes revoked", revoked)
 
     async def _consent(self, request: AliceRequest, code: str) -> AliceResponse:
         answer = yes_or_no(request.request)

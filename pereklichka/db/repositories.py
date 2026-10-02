@@ -72,6 +72,14 @@ class LinkCodeRepository:
                 continue
         return await self._insert(ward_id, now)
 
+    async def revoke_active(self, now: datetime) -> int:
+        revoked = await self._session.scalars(
+            delete(LinkCodeRow)
+            .where(LinkCodeRow.used_at.is_(None), LinkCodeRow.expires_at > now)
+            .returning(LinkCodeRow.id)
+        )
+        return len(revoked.all())
+
     async def _insert(self, ward_id: UUID, now: datetime) -> LinkCode:
         link_code = LinkCode.issue(ward_id, now)
         async with self._session.begin_nested():
