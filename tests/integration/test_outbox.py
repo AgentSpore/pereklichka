@@ -284,6 +284,7 @@ async def test_worker_sends_current_day_silence(
             f"silence:{ward.id}:{now.date()}:first", "current alarm", [101]
         )
         queued = await session.scalar(select(OutboxRow))
+        assert queued is not None
         queued.available_at = now
     bot = Bot("123456:" + "a" * 35)
     bot.send_message = AsyncMock()
