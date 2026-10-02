@@ -1,6 +1,8 @@
+from dataclasses import dataclass
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from aiogram.types import InlineKeyboardMarkup
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -30,3 +32,16 @@ class WardInput(BaseModel):
 class ScheduleInput(WardInput):
     ward_id: UUID
     name: str = "schedule"
+
+
+class DraftInput(WardInput):
+    """A complete validated draft crosses the conversation/service boundary."""
+
+    ward_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class Screen:
+    text: str
+    markup: InlineKeyboardMarkup
+    clear_draft: bool = False

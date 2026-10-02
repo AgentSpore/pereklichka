@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.bot import texts
-from pereklichka.bot.schemas import ScheduleInput, WardInput
+from pereklichka.bot.schemas import DraftInput, ScheduleInput
 from pereklichka.db.relatives import RelativeRepository
 from pereklichka.db.repositories import LinkCodeRepository, WardRepository
 from pereklichka.domain.family import Ward
@@ -46,9 +46,8 @@ class FamilyService:
         match command:
             case "ward":
                 name, hour, timezone = (part.strip() for part in args.split("|"))
-                data = WardInput(name=name, checkin_hour=int(hour), timezone=timezone)
-                ward = Ward(family_id=family_id, **data.model_dump())
-                await self._wards.add(ward)
+                data = DraftInput(name=name, checkin_hour=int(hour), timezone=timezone)
+                ward = await self.save_draft(data)
                 return texts.WARD_CREATED.format(name=ward.name, id=ward.id)
             case "wards":
                 wards = await self._relatives.wards(family_id)
@@ -79,11 +78,11 @@ class FamilyService:
                 code = await self._codes.issue(ward.id, self._now)
                 return texts.CODE.format(code=code.code)
             case "schedule":
-                return await self._schedule(family_id, args)
+                return await self._schedule(args)
             case _:
                 return texts.HELP
 
-    async def _schedule(self, family_id: UUID, args: str) -> str:
+    async def _schedule(self, args: str) -> str:
         ward_id, hour, timezone, minutes = args.split()
         data = ScheduleInput(
             ward_id=UUID(ward_id),
@@ -91,15 +90,45 @@ class FamilyService:
             timezone=timezone,
             escalation_minutes=int(minutes),
         )
-        ward = await self._relatives.ward(family_id, data.ward_id)
+        ward = await self.get_ward(data.ward_id)
         if ward is None:
             return texts.NO_ACCESS
-        await self._relatives.schedule(
-            replace(
-                ward,
-                checkin_hour=data.checkin_hour,
-                timezone=data.timezone,
-                escalation_minutes=data.escalation_minutes,
-            )
-        )
+        await self.save_draft(DraftInput.model_validate(data.model_dump()))
         return texts.SAVED
+
+    async def list_wards(self) -> list[Ward]:
+        return await self._relatives.wards(await self._family())
+
+    async def get_ward(self, ward_id: UUID) -> Ward | None:
+        return await self._relatives.ward(await self._family(), ward_id)
+
+    async def save_draft(self, data: DraftInput) -> Ward:
+        family_id = await self._family()
+        if data.ward_id is None:
+            ward = Ward(family_id=family_id, **data.model_dump(exclude={"ward_id"}))
+            await self._wards.add(ward)
+            return ward
+        ward = await self._relatives.ward(family_id, data.ward_id)
+        if ward is None:
+            raise ValueError(texts.UX_NO_ACCESS)
+        ward = replace(ward, **data.model_dump(exclude={"ward_id", "name"}))
+        await self._relatives.schedule(ward)
+        return ward
+
+    async def relative_labels(self) -> str:
+        relatives = await self._relatives.members(await self._family())
+        return texts.RELATIVES_TITLE + "\n".join(
+            f"{relative.alert_order}. "
+            + (
+                texts.SELF
+                if relative.chat_id == self._chat_id
+                else texts.RELATIVE.format(number=index)
+            )
+            for index, relative in enumerate(relatives, 1)
+        )
+
+    async def _family(self) -> UUID:
+        family_id = await self._relatives.family_for(self._chat_id)
+        if family_id is None:
+            raise ValueError(texts.NO_FAMILY)
+        return family_id
