@@ -84,7 +84,11 @@ class Dialog:
 
     def _help(self, ward: Ward | None, state: dict[str, Any]) -> AliceResponse:
         if ward is None:
-            prompt = SAY_YES_OR_NO if state.get("step") == Step.CONSENT else HOW_TO_LINK
+            prompt = (
+                SAY_YES_OR_NO
+                if state.get("step") == Step.CONSENT
+                else "Сейчас скажите: привязать код, затем назовите шесть цифр."
+            )
         else:
             state = state or {"step": Step.WELLBEING}
             prompt = {
