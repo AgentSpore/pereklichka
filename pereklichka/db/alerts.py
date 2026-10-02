@@ -1,23 +1,12 @@
 from datetime import date, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Date, ForeignKey, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
 
-from pereklichka.db.models import Base, CheckInRow, RelativeRow, WardRow
+from pereklichka.db.models import CheckInRow, RelativeRow, WardRow
+from pereklichka.db.models import SilenceAlertRow as SilenceAlertRow
 from pereklichka.db.outbox import OutboxRepository
-
-
-class SilenceAlertRow(Base):
-    __tablename__ = "silence_alerts"
-
-    ward_id: Mapped[UUID] = mapped_column(
-        ForeignKey("wards.id", ondelete="CASCADE"), primary_key=True
-    )
-    local_day: Mapped[date] = mapped_column(Date, primary_key=True)
-    first_at: Mapped[datetime]
-    escalated_at: Mapped[datetime | None]
 
 
 class AlertRepository:

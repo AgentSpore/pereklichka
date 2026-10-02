@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import BigInteger, ForeignKey, Index, SmallInteger, String, UniqueConstraint
+from sqlalchemy import BigInteger, Date, ForeignKey, Index, SmallInteger, String, UniqueConstraint
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -108,3 +108,14 @@ class OutboxRow(Base):
     delivered_at: Mapped[datetime | None]
     claim_id: Mapped[UUID | None]
     attempts: Mapped[int] = mapped_column(server_default="0")
+
+
+class SilenceAlertRow(Base):
+    __tablename__ = "silence_alerts"
+
+    ward_id: Mapped[UUID] = mapped_column(
+        ForeignKey("wards.id", ondelete="CASCADE"), primary_key=True
+    )
+    local_day: Mapped[date] = mapped_column(Date, primary_key=True)
+    first_at: Mapped[datetime]
+    escalated_at: Mapped[datetime | None]
