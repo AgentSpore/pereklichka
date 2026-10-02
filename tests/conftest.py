@@ -29,7 +29,7 @@ def database_url() -> Iterator[str]:
 async def sessionmaker(database_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     maker = create_sessionmaker(database_url)
     async with maker() as session:
-        await session.execute(text("TRUNCATE families, link_attempts CASCADE"))
+        await session.execute(text("TRUNCATE families, link_attempts, outbox CASCADE"))
         await session.commit()
     yield maker
     await maker.kw["bind"].dispose()

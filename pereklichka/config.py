@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,3 +12,10 @@ class DatabaseSettings(BaseSettings):
 
 class Settings(DatabaseSettings):
     skill_id: str
+    bot_token: SecretStr | None = None
+    bot_token_file: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "BOT_TOKEN_FILE", "TELEGRAM_BOT_TOKEN_FILE", "bot_token_file"
+        ),
+    )
