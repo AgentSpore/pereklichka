@@ -16,7 +16,7 @@ export POSTGRES_PASSWORD_PATH=/absolute/path/db-password
 export SKILL_ID='replace-with-draft-skill-id'
 export IMAGE_TAG='replace-with-commit-sha'
 docker compose config --quiet
-docker compose up -d --build --wait --wait-timeout 180
+timeout 180 docker compose up -d --build --wait
 curl --fail http://127.0.0.1:8000/health
 docker compose exec -T app python deploy/readiness.py
 ```
