@@ -185,3 +185,18 @@ async def test_export_actual_synthetic_screens(interact, session: AsyncSession):
             ensure_ascii=False,
         )
     )
+
+
+async def test_stale_cancel_does_not_discard_new_draft(interact, session: AsyncSession):
+    await interact("/start")
+    screen = await interact("ux:add")
+    old_cancel = callback(screen, texts.CANCEL)
+    await interact("ux:menu")
+    await interact("ux:add")
+    screen = await interact(old_cancel)
+    assert screen.text == texts.STALE
+    screen = await interact("Анна")
+    assert "2 из 4" in screen.text
+    screen = await interact(callback(screen, texts.CANCEL))
+    assert screen.text == texts.MENU
+    assert await session.scalar(select(func.count()).select_from(WardRow)) == 0

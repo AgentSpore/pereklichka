@@ -69,7 +69,7 @@ async def draft_screen(state: FSMContext, error: bool = False) -> Screen:
             items.append((texts.MOSCOW, prefix + "zone"))
     if step != "name":
         items.append((texts.BACK, prefix + "back"))
-    items.append((texts.CANCEL, "ux:menu"))
+    items.append((texts.CANCEL, prefix + "cancel"))
     return Screen((texts.DRAFT_INVALID if error else "") + text, presentation.keyboard(items))
 
 
@@ -103,6 +103,8 @@ async def draft_action(state: FSMContext, service: FamilyService, parts: Sequenc
     if len(parts) != 4 or not step or parts[2] != data.get("nonce"):
         return Screen(texts.STALE, presentation.navigation())
     action = parts[3]
+    if action == "cancel":
+        return Screen(texts.MENU, presentation.menu(), clear_draft=True)
     if action == "save" and step == "confirm":
         ward = await service.save_draft(DraftInput.model_validate(data))
         return Screen(
