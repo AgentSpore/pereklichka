@@ -17,6 +17,7 @@ class Entity(BaseModel):
 class Nlu(BaseModel):
     tokens: list[str] = Field(default_factory=list)
     entities: list[Entity] = Field(default_factory=list)
+    intents: dict[str, Any] = Field(default_factory=dict)
 
 
 class Utterance(BaseModel):

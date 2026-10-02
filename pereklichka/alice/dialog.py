@@ -7,7 +7,7 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pereklichka.alice.answers import extract_code, nothing_needed, yes_or_no
+from pereklichka.alice.answers import asks_for_help, extract_code, nothing_needed, yes_or_no
 from pereklichka.alice.schemas import AliceRequest, AliceResponse, Reply
 from pereklichka.bot.reports import ReportService
 from pereklichka.db.repositories import (
@@ -19,24 +19,40 @@ from pereklichka.db.repositories import (
 from pereklichka.domain.checkin import CheckIn
 from pereklichka.domain.family import LinkCode, Ward
 
+INTRO = (
+    "Семейная перекличка спрашивает о самочувствии, лекарствах и просьбах. "
+    "После вашего согласия ответы передаются родным в Телеграм. "
+)
 HOW_TO_LINK = (
-    "Здравствуйте! Это Перекличка. Чтобы привязать колонку, скажите: "
-    "привязать код, и назовите шесть цифр из Телеграм-бота."
+    "Здравствуйте! " + INTRO + "Чтобы привязать колонку, скажите: "
+    "привязать код, затем назовите шесть цифр из бота Переклички в Телеграм. "
+    "Для инструкции скажите: помощь."
 )
 BAD_CODE = "Этот код не подошёл или устарел. Попросите у родных новый код и назовите его снова."
 CONSENT = (
-    "Перекличка будет каждое утро спрашивать о самочувствии и лекарствах и передавать "
-    "ваши ответы родным в Телеграм. Голос не записывается. Вы согласны? Скажите да или нет."
+    "Когда вы запускаете Семейную перекличку, я спрашиваю о самочувствии, лекарствах и просьбах "
+    "и передаю "
+    "ваши ответы родным в Телеграм. Навык не сохраняет аудиозаписи. "
+    "Вы согласны? Скажите да или нет."
 )
 CONSENT_VERSION = hashlib.sha256(CONSENT.encode()).hexdigest()
 TOO_MANY_ATTEMPTS = "Сейчас привязка недоступна, попробуйте через пятнадцать минут."
 SAY_YES_OR_NO = "Скажите, пожалуйста, да или нет."
-LINKED = "Готово, колонка привязана. Утром скажите: Алиса, запусти Перекличку."
+LINKED = "Готово, колонка привязана. Для отметки скажите: Алиса, запусти Семейную перекличку."
 DECLINED = "Хорошо, я ничего не сохраняю. До свидания!"
-GREETING = "Доброе утро, {name}! Как вы себя чувствуете?"
+GREETING = (
+    "Здравствуйте, {name}! " + INTRO + "Для инструкции скажите: помощь. Как вы себя чувствуете?"
+)
 ASK_MEDS = "Лекарства сегодня приняли?"
 ASK_NEEDS = "Нужно ли вам что-нибудь?"
 GOODBYE = "Спасибо! Я всё передам родным. Хорошего вам дня!"
+HELP = (
+    INTRO + "Для привязки скажите: привязать код, затем шесть цифр из бота Переклички. "
+    "На вопрос о согласии и лекарствах отвечайте да или нет. "
+    "Самочувствие и просьбы описывайте своими словами. Если ничего не нужно, скажите: ничего. "
+    "Команды помощь и что ты умеешь повторят инструкцию. "
+    "Для выхода скажите: Алиса, хватит. Разговор запускаете вы сами. "
+)
 
 
 class Step(StrEnum):
@@ -60,9 +76,25 @@ class Dialog:
     async def reply(self, request: AliceRequest) -> AliceResponse:
         state = {} if request.session.new else request.state.session
         ward = await self._wards.by_device(request.device_id)
+        if asks_for_help(request.request):
+            return self._help(ward, state)
         if ward is None:
             return await self._link(request, state)
         return await self._check_in(ward, request, state)
+
+    def _help(self, ward: Ward | None, state: dict[str, Any]) -> AliceResponse:
+        if ward is None:
+            prompt = SAY_YES_OR_NO if state.get("step") == Step.CONSENT else HOW_TO_LINK
+        else:
+            state = state or {"step": Step.WELLBEING}
+            prompt = {
+                Step.WELLBEING: "Как вы себя чувствуете?",
+                Step.MEDS: ASK_MEDS + " Скажите да или нет.",
+                Step.NEEDS: ASK_NEEDS + " Назовите просьбу или скажите: ничего.",
+            }.get(state.get("step"), "Как вы себя чувствуете?")
+        return AliceResponse(
+            response=Reply(text=HELP + prompt, end_session=False), session_state=state
+        )
 
     async def _link(self, request: AliceRequest, state: dict[str, Any]) -> AliceResponse:
         if state.get("step") == Step.CONSENT:

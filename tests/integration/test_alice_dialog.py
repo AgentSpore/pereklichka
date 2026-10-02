@@ -7,12 +7,15 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pereklichka.alice.dialog import CONSENT_VERSION, TOO_MANY_ATTEMPTS
 from pereklichka.alice.router import get_session
 from pereklichka.app import create_app
 from pereklichka.config import Settings
+from pereklichka.db.models import Base, OutboxRow
+from pereklichka.db.relatives import RelativeRepository
 from pereklichka.db.repositories import (
     CheckInRepository,
     FamilyRepository,
@@ -220,3 +223,157 @@ async def test_answer_to_a_missing_checkin_is_an_error_not_a_goodbye(
     response = await client.post("/alice", json=utterance("да", state=state))
 
     assert response.status_code == 500
+
+
+async def test_help_explains_the_skill_to_an_unknown_speaker(client: AsyncClient) -> None:
+    reply = await say(client, utterance("Помощь", new=True))
+
+    assert "самочувствии" in reply["response"]["text"]
+    assert "лекарствах" in reply["response"]["text"]
+    assert "Телеграм" in reply["response"]["text"]
+    assert "привязать код" in reply["response"]["text"]
+    assert reply["response"]["end_session"] is False
+    assert reply["session_state"] == {}
+
+
+@pytest.mark.parametrize("linked", [False, True])
+async def test_greeting_explains_the_skill_and_next_answer(
+    client: AsyncClient, session: AsyncSession, ward: Ward, linked: bool
+) -> None:
+    if linked:
+        await WardRepository(session).link_device(
+            ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+        )
+        await session.commit()
+    reply = await say(client, utterance("", new=True))
+    text = reply["response"]["text"]
+
+    assert "Семейная перекличка" in text
+    assert "самочувствии" in text and "лекарствах" in text and "просьбах" in text
+    assert "согласия" in text and "Телеграм" in text
+    assert "помощь" in text
+    assert ("Как вы себя чувствуете?" if linked else "привязать код") in text
+
+
+async def test_linking_explains_manual_launch(client: AsyncClient, link_code: LinkCode) -> None:
+    asked = await say(client, utterance(f"привязать код {link_code.code}", new=True))
+    assert "Когда вы запускаете" in asked["response"]["text"]
+    assert "Навык не сохраняет аудиозаписи" in asked["response"]["text"]
+    done = await say(client, utterance("да", state=asked["session_state"]))
+    assert "Алиса, запусти Семейную перекличку" in done["response"]["text"]
+
+
+@pytest.fixture(params=["unknown", "consent", "start", "wellbeing", "meds", "needs"])
+async def dialog_stage(
+    request: pytest.FixtureRequest, client: AsyncClient, session: AsyncSession, link_code: LinkCode
+) -> tuple[str, dict[str, Any]]:
+    stage = request.param
+    if stage == "unknown":
+        return stage, {}
+    if stage == "consent":
+        reply = await say(client, utterance(f"привязать код {link_code.code}"))
+        return stage, reply["session_state"]
+    await WardRepository(session).link_device(
+        link_code.ward_id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
+    ward = await WardRepository(session).by_device(APPLICATION_ID)
+    assert ward is not None
+    await RelativeRepository(session).add_member(ward.family_id, 101)
+    await session.commit()
+    if stage == "start":
+        return stage, {}
+    reply = await say(client, utterance("", new=True))
+    if stage in {"meds", "needs"}:
+        reply = await say(client, utterance("хорошо", state=reply["session_state"]))
+    if stage == "needs":
+        reply = await say(client, utterance("да", state=reply["session_state"]))
+    return stage, reply["session_state"]
+
+
+async def dialog_rows(session: AsyncSession) -> dict[str, list]:
+    """Snapshot real test-database rows without an ORM identity cache."""
+    return {
+        table.name: list((await session.execute(select(table))).tuples())
+        for table in Base.metadata.sorted_tables
+    }
+
+
+@pytest.mark.parametrize("command", ["Помощь", "Что ты умеешь", "подскажи"])
+async def test_help_preserves_each_stage_without_writes(
+    client: AsyncClient, session: AsyncSession, dialog_stage: tuple[str, dict], command: str
+) -> None:
+    stage, state = dialog_stage
+    if stage not in {"unknown", "start"}:
+        state = {**state, "text": "keep", "end": True}
+    body = utterance(command, state=state, new=stage in {"unknown", "start"})
+    if command == "подскажи":
+        body["request"]["nlu"]["intents"] = {"YANDEX.HELP": {"slots": {}}}
+    before = await dialog_rows(session)
+    reply = await say(client, body)
+    assert await dialog_rows(session) == before
+    expected_state = {"step": "wellbeing"} if stage == "start" else state
+    assert reply["session_state"] == expected_state
+    assert reply["response"]["end_session"] is False
+    text = reply["response"]["text"]
+    assert "самочувствии" in text and "лекарствах" in text and "просьбах" in text
+    assert "помощь" in text and "что ты умеешь" in text and "привязать код" in text
+    prompts = {
+        "unknown": "привязать код",
+        "consent": "да или нет",
+        "start": "Как вы себя чувствуете?",
+        "wellbeing": "Как вы себя чувствуете?",
+        "meds": "Лекарства сегодня приняли?",
+        "needs": "Нужно ли вам что-нибудь?",
+    }
+    assert prompts[stage] in text
+    answer = {
+        "unknown": "",
+        "consent": "да",
+        "start": "хорошо",
+        "wellbeing": "хорошо",
+        "meds": "да",
+        "needs": "купите хлеба",
+    }[stage]
+    continued = await say(client, utterance(answer, state=reply["session_state"]))
+    if stage in {"consent", "needs"}:
+        assert continued["response"]["end_session"] is True
+    elif stage in {"start", "wellbeing"}:
+        assert continued["session_state"]["step"] == "meds"
+    elif stage == "meds":
+        assert continued["session_state"]["step"] == "needs"
+    if stage == "needs":
+        rows = list((await session.execute(select(OutboxRow.text))).scalars())
+        assert len(rows) == 1 and "купите хлеба" in rows[0]
+
+
+@pytest.mark.parametrize("command", ["Помощь", "Что ты умеешь"])
+@pytest.mark.parametrize("linked", [False, True])
+async def test_new_help_session_discards_stale_state(
+    client: AsyncClient, session: AsyncSession, ward: Ward, command: str, linked: bool
+) -> None:
+    if linked:
+        await WardRepository(session).link_device(
+            ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+        )
+        await session.commit()
+    stale = {"step": "needs" if linked else "consent", "checkin": str(uuid4()), "code": "123456"}
+    before = await dialog_rows(session)
+    reply = await say(client, utterance(command, new=True, state=stale))
+    assert reply["session_state"] == ({"step": "wellbeing"} if linked else {})
+    assert await dialog_rows(session) == before
+
+
+@pytest.mark.parametrize("command", ["нужна помощь с покупками", "что ты умеешь готовить"])
+async def test_free_answer_containing_help_is_saved(
+    client: AsyncClient, session: AsyncSession, ward: Ward, command: str
+) -> None:
+    await WardRepository(session).link_device(
+        ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
+    await session.commit()
+    greeting = await say(client, utterance("", new=True))
+    meds = await say(client, utterance(command, state=greeting["session_state"]))
+    needs = await say(client, utterance("нет", state=meds["session_state"]))
+    await say(client, utterance(command, state=needs["session_state"]))
+    [checkin] = await CheckInRepository(session).for_ward(ward.id)
+    assert checkin.wellbeing == command and checkin.needs == command
