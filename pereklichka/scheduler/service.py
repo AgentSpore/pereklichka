@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from pereklichka.db.alerts import AlertRepository, SilenceAlertRow
 from pereklichka.db.models import WardRow
+from pereklichka.domain.deadline import deadline_day
 from pereklichka.scheduler.texts import ESCALATION_ALERT, FIRST_ALERT
 
 
@@ -27,15 +28,16 @@ class SilenceService:
         recipients = await self._alerts.recipients(list({ward.family_id for ward in wards}))
         for ward in wards:
             local_now = now.astimezone(ZoneInfo(ward.timezone))
-            day = local_now.date()
+            day = deadline_day(now, ward.checkin_hour, ward.timezone)
             times = completed.get(ward.id, [])
-            done = any(at.astimezone(local_now.tzinfo).date() == day for at in times)
+            done = any(at.astimezone(local_now.tzinfo).date() >= day for at in times)
             if done or ward.device_id is None or ward.consent_at is None:
                 await self._alerts.cancel(ward.id, day)
                 continue
-            await self._queue_due(
-                ward, local_now, existing.get((ward.id, day)), recipients.get(ward.family_id, [])
-            )
+            alert = existing.get((ward.id, day))
+            if day != local_now.date() and alert is None:
+                continue
+            await self._queue_due(ward, local_now, alert, recipients.get(ward.family_id, []))
         return wards[-1].id
 
     async def _queue_due(
@@ -45,7 +47,7 @@ class SilenceService:
             hour=ward.checkin_hour, minute=0, second=0, microsecond=0, fold=0
         )
         now = local_now.astimezone(UTC)
-        if not chat_ids or now < deadline.astimezone(UTC):
+        if not chat_ids or (alert is None and now < deadline.astimezone(UTC)):
             return
         if alert is None:
             await self._alerts.first(

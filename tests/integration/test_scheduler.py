@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from pereklichka.db.outbox import OutboxRepository
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pereklichka.db.alerts import SilenceAlertRow
 from pereklichka.db.models import CheckInRow, FamilyRow, OutboxRow, RelativeRow, WardRow
+from pereklichka.db.outbox import OutboxRepository
 from pereklichka.scheduler.runner import SilenceScheduler
 
 NOW = datetime(2026, 10, 2, 6, 0, tzinfo=UTC)
@@ -250,3 +250,27 @@ async def test_sweep_pages_beyond_one_batch(sessionmaker, linked_ward):
     async with sessionmaker() as session:
         assert len(list(await session.scalars(select(SilenceAlertRow)))) == 101
         assert len(list(await session.scalars(select(OutboxRow)))) == 101
+
+
+async def test_escalation_crosses_midnight_without_new_initial_alert(sessionmaker, linked_ward):
+    first = datetime(2026, 10, 2, 20, tzinfo=UTC)
+    async with sessionmaker() as session, session.begin():
+        ward = await session.get(WardRow, linked_ward.id)
+        ward.checkin_hour = 23
+        ward.escalation_minutes = 120
+    scheduler = SilenceScheduler(sessionmaker)
+    await scheduler.tick(first)
+    await scheduler.tick(first + timedelta(minutes=119))
+    await scheduler.tick(first + timedelta(minutes=120))
+    async with sessionmaker() as session:
+        rows = list(await session.scalars(select(OutboxRow)))
+        assert sorted(r.event_key.rsplit(":", 1)[1] for r in rows) == ["all", "all", "first"]
+        [alert] = list(await session.scalars(select(SilenceAlertRow)))
+        assert alert.local_day.isoformat() == "2026-10-02"
+        assert alert.escalated_at == first + timedelta(minutes=120)
+
+
+async def test_before_deadline_does_not_create_yesterday_initial_alert(sessionmaker, linked_ward):
+    await SilenceScheduler(sessionmaker).tick(NOW - timedelta(minutes=1))
+    async with sessionmaker() as session:
+        assert list(await session.scalars(select(SilenceAlertRow))) == []

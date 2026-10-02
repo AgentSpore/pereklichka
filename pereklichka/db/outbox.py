@@ -1,12 +1,12 @@
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pereklichka.db.models import CheckInRow, OutboxRow, WardRow
+from pereklichka.db.models import CheckInRow, OutboxRow, SilenceAlertRow, WardRow
+from pereklichka.domain.deadline import day_start, deadline_day
 from pereklichka.domain.delivery import Delivery
 
 
@@ -61,25 +61,7 @@ class OutboxRepository:
         if event_key is None or not event_key.startswith("silence:"):
             return False
         _, ward_id, event_day, _ = event_key.split(":")
-        timezone = await self._session.scalar(
-            select(WardRow.timezone).where(WardRow.id == UUID(ward_id))
-        )
-        stale = timezone is None
-        if timezone is not None:
-            zone = ZoneInfo(timezone)
-            now = await self.now()
-            day = now.astimezone(zone).date()
-            start = datetime.combine(day, time.min, zone)
-            completed = await self._session.scalar(
-                select(CheckInRow.id)
-                .where(
-                    CheckInRow.ward_id == UUID(ward_id),
-                    CheckInRow.completed_at >= start,
-                    CheckInRow.completed_at < start + timedelta(days=1),
-                )
-                .limit(1)
-            )
-            stale = event_day != day.isoformat() or completed is not None
+        stale = await self._silence_stale(UUID(ward_id), date.fromisoformat(event_day))
         if stale:
             await self._session.execute(
                 delete(OutboxRow).where(
@@ -89,6 +71,30 @@ class OutboxRepository:
                 )
             )
         return stale
+
+    async def _silence_stale(self, ward_id: UUID, event_day: date) -> bool:
+        ward = await self._session.get(WardRow, ward_id)
+        if ward is None:
+            return True
+        now = await self.now()
+        day = deadline_day(now, ward.checkin_hour, ward.timezone)
+        if event_day != day:
+            return True
+        start = day_start(day, ward.timezone)
+        if event_day != now.astimezone(start.tzinfo).date():
+            alert = await self._session.get(SilenceAlertRow, (ward_id, day))
+            if alert is None:
+                return True
+        completed = await self._session.scalar(
+            select(CheckInRow.id)
+            .where(
+                CheckInRow.ward_id == ward_id,
+                CheckInRow.completed_at >= start,
+                CheckInRow.completed_at <= now,
+            )
+            .limit(1)
+        )
+        return completed is not None
 
     async def now(self) -> datetime:
         return (await self._session.execute(select(func.clock_timestamp()))).scalar_one()

@@ -26,8 +26,7 @@ class ReportService:
         checkin = await self._checkins.complete(checkin_id, ward.id, needs, self._now)
         if checkin is None:
             return
-        local_day = self._now.astimezone(ZoneInfo(ward.timezone)).date()
-        await self._outbox.cancel_pending(f"silence:{ward.id}:{local_day}:")
+        await self._outbox.cancel_pending(f"silence:{ward.id}:")
         relatives = await self._relatives.members(ward.family_id)
         text = texts.REPORT.format(
             name=ward.name,

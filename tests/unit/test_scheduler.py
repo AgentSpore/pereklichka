@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from pereklichka.domain.deadline import deadline_day
 from pereklichka.scheduler.runner import SilenceScheduler
 from pereklichka.scheduler.service import SilenceService
 
@@ -56,3 +57,17 @@ async def test_stop_drains_created_job_before_it_enters_callback(monkeypatch) ->
         assert finished.is_set()
     finally:
         await pending
+
+
+@pytest.mark.parametrize(
+    ("instant", "hour", "expected"),
+    [
+        ("2026-10-02T22:00:00+00:00", 23, "2026-10-02"),
+        ("2026-10-02T22:00:00+00:00", 0, "2026-10-03"),
+        ("2026-03-29T00:59:59+00:00", 2, "2026-03-28"),
+        ("2026-03-29T01:00:00+00:00", 2, "2026-03-29"),
+    ],
+)
+async def test_deadline_cycle_preserves_midnight_and_dst(instant, hour, expected):
+    zone = "Europe/Berlin" if instant.startswith("2026-03") else "Europe/Moscow"
+    assert deadline_day(datetime.fromisoformat(instant), hour, zone).isoformat() == expected

@@ -1,6 +1,8 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram import Bot
@@ -14,7 +16,8 @@ from pereklichka.app import create_app
 from pereklichka.bot.reports import ReportService
 from pereklichka.bot.worker import DeliveryWorker
 from pereklichka.config import Settings
-from pereklichka.db.models import CheckInRow, OutboxRow
+from pereklichka.db.alerts import SilenceAlertRow
+from pereklichka.db.models import CheckInRow, OutboxRow, WardRow
 from pereklichka.db.outbox import OutboxRepository
 from pereklichka.db.relatives import RelativeRepository
 from pereklichka.db.repositories import CheckInRepository, WardRepository
@@ -272,13 +275,16 @@ async def test_worker_discards_silence_after_completed_checkin(
 
 
 async def test_worker_sends_current_day_silence(
-    sessionmaker: async_sessionmaker[AsyncSession], ward: Ward
+    sessionmaker: async_sessionmaker[AsyncSession], ward: Ward, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    now = datetime(2026, 10, 2, 6, tzinfo=UTC)
+    monkeypatch.setattr(OutboxRepository, "now", AsyncMock(return_value=now))
     async with sessionmaker() as session, session.begin():
-        now = await OutboxRepository(session).now()
         await OutboxRepository(session).enqueue(
             f"silence:{ward.id}:{now.date()}:first", "current alarm", [101]
         )
+        queued = await session.scalar(select(OutboxRow))
+        queued.available_at = now
     bot = Bot("123456:" + "a" * 35)
     bot.send_message = AsyncMock()
     try:
@@ -286,3 +292,63 @@ async def test_worker_sends_current_day_silence(
         bot.send_message.assert_awaited_once_with(101, "current alarm", request_timeout=10)
     finally:
         await bot.session.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [(23, 0, False, True), (0, 0, False, False), (23, -1, False, False), (23, 0, True, False)],
+)
+async def test_worker_carries_midnight_escalation_until_new_deadline(
+    sessionmaker, ward, monkeypatch, case
+):
+    hour, event_age, completed, delivered = case
+    first = datetime(2026, 10, 2, 20, tzinfo=UTC) + timedelta(days=event_age)
+    now = datetime(2026, 10, 2, 22, tzinfo=UTC)
+    monkeypatch.setattr(OutboxRepository, "now", AsyncMock(return_value=now))
+    async with sessionmaker() as session, session.begin():
+        row = await session.get(WardRow, ward.id)
+        row.checkin_hour = hour
+        session.add(
+            SilenceAlertRow(
+                ward_id=ward.id,
+                local_day=first.astimezone(ZoneInfo(ward.timezone)).date(),
+                first_at=first,
+                escalated_at=now,
+            )
+        )
+        await OutboxRepository(session).enqueue(
+            f"silence:{ward.id}:{first.astimezone(ZoneInfo(ward.timezone)).date()}:all",
+            "carried alarm",
+            [101],
+        )
+        queued = await session.scalar(select(OutboxRow))
+        queued.available_at = first
+        if completed:
+            session.add(
+                CheckInRow(
+                    id=uuid4(),
+                    ward_id=ward.id,
+                    at=first,
+                    wellbeing="хорошо",
+                    meds_taken=True,
+                    needs=None,
+                    completed_at=now - timedelta(minutes=1),
+                )
+            )
+    bot = Bot("123456:" + "a" * 35)
+    bot.send_message = AsyncMock()
+    try:
+        assert await DeliveryWorker(sessionmaker, bot).deliver_once()
+        assert bot.send_message.await_count == int(delivered)
+    finally:
+        await bot.session.close()
+
+
+async def test_next_day_completion_cancels_carried_silence(session, ward, checkin):
+    completion = datetime(2026, 10, 2, 22, tzinfo=UTC)
+    prefix = f"silence:{ward.id}:2026-10-02:"
+    await OutboxRepository(session).enqueue(prefix + "all", "carried alarm", [101])
+    await session.commit()
+    await ReportService(session, completion).complete(checkin.id, ward, None)
+    await session.commit()
+    assert prefix + "all" not in list(await session.scalars(select(OutboxRow.event_key)))
