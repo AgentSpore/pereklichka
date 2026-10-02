@@ -9,6 +9,13 @@ NEGATION = "не"
 NO = frozenset({"нет", "неа"})
 NOTHING = NO | {NEGATION, "ничего", "мне", "нужно", "надо", "спасибо", "всё", "все", "есть"}
 DIGITS = re.compile(r"\d+")
+HELP_COMMANDS = frozenset({"помощь", "что ты умеешь"})
+
+
+def asks_for_help(request: Utterance) -> bool:
+    """Recognise whole help commands or Alice's built-in help intent."""
+    words = re.findall(r"\w+", (request.command or request.original_utterance).casefold())
+    return " ".join(words) in HELP_COMMANDS or "YANDEX.HELP" in request.nlu.intents
 
 
 def extract_code(request: Utterance) -> str | None:
