@@ -27,6 +27,11 @@ class WardRepository:
         self._session.add(WardRow(**vars(ward)))
         await self._session.flush()
 
+    async def lock(self, ward_id: UUID) -> None:
+        await self._session.scalar(
+            select(WardRow.id).where(WardRow.id == ward_id).with_for_update()
+        )
+
     async def by_device(self, device_id: str) -> Ward | None:
         row = await self._session.scalar(select(WardRow).where(WardRow.device_id == device_id))
         return None if row is None else self._to_ward(row)
@@ -48,6 +53,7 @@ class WardRepository:
             name=row.name,
             checkin_hour=row.checkin_hour,
             timezone=row.timezone,
+            escalation_minutes=row.escalation_minutes,
             device_id=row.device_id,
             consent_at=row.consent_at,
             consent_version=row.consent_version,
@@ -158,6 +164,28 @@ class CheckInRepository:
     async def set_needs(self, checkin_id: UUID, ward_id: UUID, needs: str | None) -> None:
         await self._answer(checkin_id, ward_id, needs=needs)
 
+    async def complete(
+        self, checkin_id: UUID, ward_id: UUID, needs: str | None, now: datetime
+    ) -> CheckIn | None:
+        row = await self._session.scalar(
+            update(CheckInRow)
+            .where(
+                CheckInRow.id == checkin_id,
+                CheckInRow.ward_id == ward_id,
+                CheckInRow.completed_at.is_(None),
+            )
+            .values(needs=needs, completed_at=now)
+            .returning(CheckInRow)
+        )
+        if row is not None:
+            return CheckIn(**{key: getattr(row, key) for key in CheckIn.__dataclass_fields__})
+        existing = await self._session.scalar(
+            select(CheckInRow.id).where(CheckInRow.id == checkin_id, CheckInRow.ward_id == ward_id)
+        )
+        if existing is None:
+            raise CheckInNotFoundError(checkin_id)
+        return None
+
     async def _answer(self, checkin_id: UUID, ward_id: UUID, **values: object) -> None:
         updated = await self._session.scalar(
             update(CheckInRow)
@@ -177,6 +205,7 @@ class CheckInRepository:
                 id=r.id,
                 ward_id=r.ward_id,
                 at=r.at,
+                completed_at=r.completed_at,
                 wellbeing=r.wellbeing,
                 meds_taken=r.meds_taken,
                 needs=r.needs,

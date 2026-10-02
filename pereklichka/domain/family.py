@@ -18,6 +18,7 @@ class Ward:
     name: str
     checkin_hour: int
     timezone: str
+    escalation_minutes: int = 30
     device_id: str | None = None
     consent_at: datetime | None = None
     consent_version: str | None = None

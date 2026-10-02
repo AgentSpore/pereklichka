@@ -1,0 +1,54 @@
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  db:
+    <<: *service
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_USER: pereklichka
+      POSTGRES_DB: pereklichka
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U pereklichka -d pereklichka"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+    cpus: 0.5
+    networks: [database]
+
+  app:
+    <<: *service
+    build: .
+    image: pereklichka:${IMAGE_TAG:-local}
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      DATABASE_HOST: db
+      SKILL_ID: ${SKILL_ID:-preview-local}
+    secrets: [db_password]
+    depends_on:
+      db: {condition: service_healthy}
+    ports: ["127.0.0.1:${APP_PORT:-8000}:8000"]
+    mem_limit: 512m
+    cpus: 1.0
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    networks: [database, outbound]
+
+networks:
+  database: {internal: true}
+  outbound: {}
+volumes:
+  postgres_data: {}
+secrets:
+  db_password:
+    file: ${POSTGRES_PASSWORD_PATH:-./deploy/secrets/db-password}

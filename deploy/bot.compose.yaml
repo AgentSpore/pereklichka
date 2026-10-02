@@ -1,0 +1,8 @@
+services:
+  app:
+    environment:
+      BOT_TOKEN_FILE: /run/secrets/bot_token
+    secrets: [bot_token]
+secrets:
+  bot_token:
+    file: ${BOT_TOKEN_PATH:?Set path to the bot token file}

@@ -10,4 +10,5 @@ class CheckIn:
     wellbeing: str
     meds_taken: bool | None
     needs: str | None
+    completed_at: datetime | None = None
     id: UUID = field(default_factory=uuid4)

@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import BigInteger, ForeignKey, Index, SmallInteger, String, text
+from sqlalchemy import BigInteger, Date, ForeignKey, Index, SmallInteger, String, UniqueConstraint
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -25,6 +26,7 @@ class WardRow(Base):
     name: Mapped[str] = mapped_column(String(100))
     checkin_hour: Mapped[int] = mapped_column(SmallInteger)
     timezone: Mapped[str] = mapped_column(String(64))
+    escalation_minutes: Mapped[int] = mapped_column(SmallInteger, server_default="30")
     device_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     consent_at: Mapped[datetime | None]
     consent_version: Mapped[str | None] = mapped_column(String(64))
@@ -32,6 +34,7 @@ class WardRow(Base):
 
 class RelativeRow(Base):
     __tablename__ = "relatives"
+    __table_args__ = (UniqueConstraint("chat_id", name="uq_relatives_chat_id"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"))
@@ -46,7 +49,7 @@ class LinkCodeRow(Base):
             "uq_link_codes_unused_code",
             "code",
             unique=True,
-            postgresql_where=text("used_at IS NULL"),
+            postgresql_where=sql_text("used_at IS NULL"),
         ),
     )
 
@@ -77,3 +80,42 @@ class CheckInRow(Base):
     wellbeing: Mapped[str] = mapped_column(String(1024))
     meds_taken: Mapped[bool | None]
     needs: Mapped[str | None] = mapped_column(String(1024))
+    completed_at: Mapped[datetime | None]
+
+
+class InvitationRow(Base):
+    __tablename__ = "invitations"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime]
+
+
+class OutboxRow(Base):
+    __tablename__ = "outbox"
+    __table_args__ = (
+        UniqueConstraint("event_key", "chat_id", name="uq_outbox_event_chat"),
+        Index(
+            "ix_outbox_pending", "available_at", postgresql_where=sql_text("delivered_at IS NULL")
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(150))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    text: Mapped[str] = mapped_column(String(4096))
+    available_at: Mapped[datetime] = mapped_column(server_default=sql_text("now()"))
+    delivered_at: Mapped[datetime | None]
+    claim_id: Mapped[UUID | None]
+    attempts: Mapped[int] = mapped_column(server_default="0")
+
+
+class SilenceAlertRow(Base):
+    __tablename__ = "silence_alerts"
+
+    ward_id: Mapped[UUID] = mapped_column(
+        ForeignKey("wards.id", ondelete="CASCADE"), primary_key=True
+    )
+    local_day: Mapped[date] = mapped_column(Date, primary_key=True)
+    first_at: Mapped[datetime]
+    escalated_at: Mapped[datetime | None]

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.alice.answers import extract_code, nothing_needed, yes_or_no
 from pereklichka.alice.schemas import AliceRequest, AliceResponse, Reply
+from pereklichka.bot.reports import ReportService
 from pereklichka.db.repositories import (
     CheckInRepository,
     LinkAttemptRepository,
@@ -54,6 +55,7 @@ class Dialog:
         self._attempts = LinkAttemptRepository(session)
         self._checkins = CheckInRepository(session)
         self._now = now
+        self._reports = ReportService(session, now)
 
     async def reply(self, request: AliceRequest) -> AliceResponse:
         state = {} if request.session.new else request.state.session
@@ -121,7 +123,7 @@ class Dialog:
                 return self._say(ASK_NEEDS, step=Step.NEEDS, checkin=state["checkin"])
             case Step.NEEDS:
                 needs = None if nothing_needed(request.request) else text
-                await self._checkins.set_needs(UUID(state["checkin"]), ward.id, needs)
+                await self._reports.complete(UUID(state["checkin"]), ward, needs)
                 return self._say(GOODBYE, end=True)
         return self._say(GREETING.format(name=ward.name), step=Step.WELLBEING)
 
