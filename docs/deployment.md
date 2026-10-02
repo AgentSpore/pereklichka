@@ -42,6 +42,32 @@ docker compose -f compose.yaml -f deploy/bot.compose.yaml up -d --build --wait
 и `SKILL_ID_FILE`. Содержимое этих файлов становится переменными окружения
 внутри процесса. Не публикуйте файлы, вывод окружения или URL подключения.
 
+## Прокси Telegram
+
+Если сервер не подключается к Telegram напрямую, приложение принимает
+`BOT_PROXY` или `BOT_PROXY_FILE`. Файл имеет приоритет. Он содержит один URL
+HTTP CONNECT, SOCKS4 или SOCKS5; доступ к файлу настройте как для токена.
+MTProto-прокси для этого подключения не подходят.
+
+```bash
+export BOT_PROXY_PATH=/absolute/path/bot-proxy
+docker compose -f compose.yaml -f deploy/bot.compose.yaml \
+  -f deploy/bot-proxy.compose.yaml config --quiet
+docker compose -f compose.yaml -f deploy/bot.compose.yaml \
+  -f deploy/bot-proxy.compose.yaml up -d --build --wait
+```
+
+URL читается внутри приложения, содержимое файла не попадает в YAML или образ.
+Прокси используется для `getMe`, polling и отправки сообщений. Проверка TLS
+Telegram сохраняется. При ошибке прокси приложение не переключается
+на прямое соединение. Неверный URL, пустой или недоступный файл останавливает
+запуск; ошибка не содержит URL или учётных данных.
+
+Публичный бесплатный прокси сначала проверьте на доступ к Bot API
+с проверкой TLS, затем на реальный polling и доставку. Прокси может перестать
+работать; доставка зависит от его доступности. Поддержка прокси в коде
+не означает, что подключение на сервере уже проверено.
+
 ## AgentSpore
 
 2 октября 2026 года развёрнут `main`, коммит `3f236d43969ecc766613f0f375c442c0a866d7a9`.

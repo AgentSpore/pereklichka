@@ -13,6 +13,8 @@ class DatabaseSettings(BaseSettings):
 class Settings(DatabaseSettings):
     skill_id: str
     bot_token: SecretStr | None = None
+    bot_proxy: SecretStr | None = None
+    bot_proxy_file: Path | None = None
     bot_token_file: Path | None = Field(
         default=None,
         validation_alias=AliasChoices(

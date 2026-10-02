@@ -1,0 +1,8 @@
+services:
+  app:
+    environment:
+      BOT_PROXY_FILE: /run/secrets/bot_proxy
+    secrets: [bot_proxy]
+secrets:
+  bot_proxy:
+    file: ${BOT_PROXY_PATH:?Set path to the Telegram proxy file}

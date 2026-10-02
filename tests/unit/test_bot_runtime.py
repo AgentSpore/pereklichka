@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.types import Chat, Message, Update, User
+from aiohttp import TCPConnector
+from aiohttp_socks import ProxyConnector
 from fastapi import FastAPI
 
 from pereklichka.bot import runtime
@@ -238,3 +240,141 @@ async def test_scheduler_shutdown_error_still_disposes_engine(app: FastAPI) -> N
         async with runtime.lifespan(app):
             pass
     app.state.sessionmaker.kw["bind"].dispose.assert_awaited_once()
+
+
+async def test_proxy_setting_reaches_real_telegram_session(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.state.settings = Settings(
+        database_url="unused",
+        skill_id="test",
+        bot_token="123456:" + "a" * 35,
+        bot_proxy="http://127.0.0.1:8080",
+        _env_file=None,
+    )
+    sessions = []
+
+    async def get_me(bot):
+        sessions.append(await bot.session.create_session())
+        assert bot.session.proxy == "http://127.0.0.1:8080"
+        raise RuntimeError("Synthetic stop after transport verification")
+
+    monkeypatch.setattr(Bot, "get_me", get_me)
+    with pytest.raises(RuntimeError, match="Synthetic stop"):
+        async with runtime.lifespan(app):
+            pytest.fail("Startup must fail")
+    assert len(sessions) == 1
+    assert sessions[0].closed
+    app.state.scheduler.stop.assert_awaited_once()
+    app.state.sessionmaker.kw["bind"].dispose.assert_awaited_once()
+
+
+@pytest.mark.parametrize("source", ["direct", "environment", "file", "override"])
+async def test_proxy_transport_configuration(source, tmp_path, monkeypatch) -> None:
+    from_environment = "http://127.0.0.1:8080"
+    from_file = "socks5://127.0.0.1:1080"
+    monkeypatch.delenv("BOT_PROXY", raising=False)
+    monkeypatch.delenv("BOT_PROXY_FILE", raising=False)
+    if source in {"environment", "override"}:
+        monkeypatch.setenv("BOT_PROXY", from_environment)
+    if source in {"file", "override"}:
+        path = tmp_path / "synthetic-proxy"
+        path.write_text(from_file + "\n")
+        monkeypatch.setenv("BOT_PROXY_FILE", str(path))
+    settings = Settings(database_url="unused", skill_id="test", _env_file=None)
+    expected = (
+        from_file
+        if source in {"file", "override"}
+        else from_environment
+        if source == "environment"
+        else None
+    )
+    session = await runtime.create_bot_session(settings)
+    try:
+        assert session.proxy == expected
+        assert session.timeout == 10
+        client = await session.create_session()
+        assert isinstance(client.connector, TCPConnector)
+        assert client.connector._ssl is not False
+        assert isinstance(client.connector, ProxyConnector if expected else TCPConnector)
+        if expected:
+            assert session._connector_init["rdns"] is True
+    finally:
+        await session.close()
+    assert client.closed
+    assert from_environment not in repr(settings)
+    assert from_file not in repr(settings)
+
+
+@pytest.mark.parametrize("proxy", ["", "broken", "https://127.0.0.1:8080", "http://x:bad"])
+async def test_invalid_proxy_configuration_is_safe(app, proxy, monkeypatch) -> None:
+    value = proxy.replace("x", "synthetic-user:synthetic-password@x")
+    app.state.settings = Settings(
+        database_url="unused",
+        skill_id="test",
+        bot_token="123456:" + "a" * 35,
+        bot_proxy=value,
+        _env_file=None,
+    )
+    get_me = AsyncMock()
+    monkeypatch.setattr(Bot, "get_me", get_me)
+    with pytest.raises(ValueError, match=r"^Invalid Telegram proxy configuration$") as caught:
+        async with runtime.lifespan(app):
+            pytest.fail("Invalid proxy must fail startup")
+    assert caught.value.__suppress_context__
+    get_me.assert_not_awaited()
+    app.state.scheduler.stop.assert_awaited_once()
+    app.state.sessionmaker.kw["bind"].dispose.assert_awaited_once()
+
+
+@pytest.mark.parametrize("contents", ["", "\xff", None])
+async def test_invalid_proxy_file_is_safe(app, tmp_path, contents) -> None:
+    path = tmp_path / "synthetic-proxy"
+    if contents is not None:
+        path.write_bytes(contents.encode("latin1"))
+    app.state.settings = Settings(
+        database_url="unused",
+        skill_id="test",
+        bot_token="123456:" + "a" * 35,
+        bot_proxy_file=path,
+        _env_file=None,
+    )
+    with pytest.raises(ValueError, match=r"^Invalid Telegram proxy configuration$"):
+        async with runtime.lifespan(app):
+            pytest.fail("Invalid proxy file must fail startup")
+    app.state.scheduler.stop.assert_awaited_once()
+    app.state.sessionmaker.kw["bind"].dispose.assert_awaited_once()
+
+
+async def test_proxy_bot_shared_by_polling_and_delivery(app, monkeypatch) -> None:
+    app.state.settings = Settings(
+        database_url="unused",
+        skill_id="test",
+        bot_token="123456:" + "a" * 35,
+        bot_proxy="socks5://127.0.0.1:1080",
+        _env_file=None,
+    )
+    bots = []
+    started = asyncio.Event()
+
+    async def get_me(bot):
+        bots.append(bot)
+        return User(id=1, is_bot=True, first_name="Test", username="test")
+
+    async def polling(dispatcher, bot):
+        bots.append(bot)
+        await asyncio.Event().wait()
+
+    async def delivery(worker):
+        bots.append(worker._bot)
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Bot, "get_me", get_me)
+    monkeypatch.setattr(runtime, "run_polling", polling)
+    monkeypatch.setattr(runtime.DeliveryWorker, "run", delivery)
+    async with runtime.lifespan(app):
+        await asyncio.wait_for(started.wait(), 1)
+        assert len(bots) == 3
+        assert all(bot is bots[0] for bot in bots)
+        assert bots[0].session.proxy == "socks5://127.0.0.1:1080"

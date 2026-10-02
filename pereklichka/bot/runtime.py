@@ -56,7 +56,8 @@ async def run_polling(dispatcher: Dispatcher, bot: Bot) -> None:
 @asynccontextmanager
 async def run_bot(app: FastAPI, token: str) -> AsyncIterator[None]:
     """Own polling and delivery workers until the application shuts down."""
-    async with Bot(token, session=AiohttpSession(timeout=10)) as bot:
+    session = await create_bot_session(app.state.settings)
+    async with Bot(token, session=session) as bot:
         profile = await bot.get_me()
         dispatcher = create_dispatcher(app.state.sessionmaker, profile.username or "")
         async with asyncio.TaskGroup() as group:
@@ -67,6 +68,19 @@ async def run_bot(app: FastAPI, token: str) -> AsyncIterator[None]:
             finally:
                 polling.cancel()
                 delivery.cancel()
+
+
+async def create_bot_session(settings: Settings) -> AiohttpSession:
+    """Configure one verified transport for polling and message delivery."""
+    try:
+        proxy = settings.bot_proxy.get_secret_value() if settings.bot_proxy is not None else None
+        if settings.bot_proxy_file is not None:
+            proxy = (await asyncio.to_thread(settings.bot_proxy_file.read_text)).strip()
+        if proxy is not None and not proxy:
+            raise ValueError("Empty proxy")
+        return AiohttpSession(proxy=proxy, timeout=10)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        raise ValueError("Invalid Telegram proxy configuration") from None
 
 
 @asynccontextmanager
