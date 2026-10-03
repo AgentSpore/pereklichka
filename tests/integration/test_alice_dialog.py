@@ -367,7 +367,10 @@ async def test_new_help_session_discards_stale_state(
     assert await dialog_rows(session) == before
 
 
-@pytest.mark.parametrize("command", ["нужна помощь с покупками", "что ты умеешь готовить"])
+@pytest.mark.parametrize(
+    "command",
+    ["нужна помощь с покупками", "что ты умеешь готовить", "прошу открыть Telegram-бота для меня"],
+)
 async def test_free_answer_containing_help_is_saved(
     client: AsyncClient, session: AsyncSession, ward: Ward, command: str
 ) -> None:
@@ -397,9 +400,8 @@ async def test_welcome_identifies_the_bot_with_accessible_link(
     response = reply["response"]
     assert "@PereklichkaAppBot" in response["text"]
     assert "https://t.me/PereklichkaAppBot" in response["text"]
-    assert response["buttons"] == [
-        {"title": "Открыть Telegram-бота", "url": "https://t.me/PereklichkaAppBot", "hide": False}
-    ]
+    assert "buttons" not in response
+    assert "скопируйте" in response["text"]
     assert "Перекличка апп бот" in response["tts"]
     assert "https://" not in response["tts"]
     assert len(response["text"]) <= 1024 and len(response["tts"]) <= 1024
@@ -426,7 +428,101 @@ async def test_help_and_capabilities_are_distinct_at_each_stage(
     for reply in [help_reply, capabilities_reply]:
         response = reply["response"]
         assert "@PereklichkaAppBot" in response["text"]
-        assert response["buttons"][0]["url"] == "https://t.me/PereklichkaAppBot"
+        assert "https://t.me/PereklichkaAppBot" in response["text"]
+        assert "buttons" not in response
         assert "Перекличка апп бот" in response["tts"]
         assert "https://" not in response["tts"]
         assert len(response["text"]) <= 1024 and len(response["tts"]) <= 1024
+
+
+@pytest.mark.parametrize("request_type", ["SimpleUtterance", "ButtonPressed"])
+async def test_bot_link_request_preserves_each_stage_without_writes(
+    client: AsyncClient, session: AsyncSession, dialog_stage: tuple[str, dict], request_type: str
+) -> None:
+    stage, state = dialog_stage
+    if stage not in {"unknown", "start"}:
+        state = {**state, "text": "keep", "end": True}
+    # The title comes from the user's transcript; ButtonPressed is an official synthetic payload.
+    body = utterance(
+        "Открыть Telegram-бота" if request_type == "SimpleUtterance" else "", state=state
+    )
+    if request_type == "ButtonPressed":
+        body["request"] = {"type": request_type, "payload": {"action": "unsupported"}}
+    before = await dialog_rows(session)
+    reply = await say(client, body)
+    assert await dialog_rows(session) == before
+    assert reply["session_state"] == ({"step": "wellbeing"} if stage == "start" else state)
+    response = reply["response"]
+    assert response["end_session"] is False
+    assert "Здравствуйте" not in response["text"]
+    assert "https://t.me/PereklichkaAppBot" in response["text"]
+    assert "@PereklichkaAppBot" in response["text"]
+    assert "скопируйте" in response["text"]
+    assert "buttons" not in response
+    assert "https://" not in response["tts"]
+    assert len(response["text"]) <= 1024 and len(response["tts"]) <= 1024
+    answer = {
+        "unknown": "",
+        "consent": "да",
+        "start": "хорошо",
+        "wellbeing": "хорошо",
+        "meds": "да",
+        "needs": "купите хлеба",
+    }[stage]
+    continued = await say(client, utterance(answer, state=reply["session_state"]))
+    if stage in {"consent", "needs"}:
+        assert continued["response"]["end_session"] is True
+    elif stage in {"start", "wellbeing"}:
+        assert continued["session_state"]["step"] == "meds"
+    elif stage == "meds":
+        assert continued["session_state"]["step"] == "needs"
+    if stage == "needs":
+        rows = list((await session.execute(select(OutboxRow.text))).scalars())
+        assert len(rows) == 1 and "купите хлеба" in rows[0]
+        assert "Открыть Telegram-бота" not in rows[0]
+
+
+@pytest.mark.parametrize("command", ["Открыть Telegram-бота", "button event"])
+@pytest.mark.parametrize("linked", [False, True])
+async def test_new_bot_request_discards_stale_state(
+    client: AsyncClient, session: AsyncSession, ward: Ward, command: str, linked: bool
+) -> None:
+    if linked:
+        await WardRepository(session).link_device(
+            ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+        )
+        await session.commit()
+    stale = {"step": "needs" if linked else "consent", "checkin": str(uuid4()), "code": "123456"}
+    body = utterance(command, new=True, state=stale)
+    if command == "button event":
+        body["request"] = {"type": "ButtonPressed", "payload": {"action": "unsupported"}}
+    before = await dialog_rows(session)
+    reply = await say(client, body)
+    assert reply["session_state"] == ({"step": "wellbeing"} if linked else {})
+    assert await dialog_rows(session) == before
+    assert "Здравствуйте" not in reply["response"]["text"]
+
+
+@pytest.mark.parametrize("command", ["Открыть Telegram-бота", "button event"])
+async def test_bot_request_after_completed_report_writes_nothing(
+    client: AsyncClient, session: AsyncSession, ward: Ward, command: str
+) -> None:
+    await WardRepository(session).link_device(
+        ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+    )
+    await RelativeRepository(session).add_member(ward.family_id, 101)
+    await session.commit()
+    greeting = await say(client, utterance("", new=True))
+    meds = await say(client, utterance("хорошо", state=greeting["session_state"]))
+    needs = await say(client, utterance("да", state=meds["session_state"]))
+    await say(client, utterance("купите хлеба", state=needs["session_state"]))
+    body = utterance(command, state=needs["session_state"])
+    if command == "button event":
+        body["request"] = {"type": "ButtonPressed", "payload": {"action": "unsupported"}}
+    before = await dialog_rows(session)
+    reply = await say(client, body)
+    assert reply["session_state"] == needs["session_state"]
+    assert await dialog_rows(session) == before
+    [checkin] = await CheckInRepository(session).for_ward(ward.id)
+    assert checkin.needs == "купите хлеба"
+    assert len(list((await session.execute(select(OutboxRow))).scalars())) == 1

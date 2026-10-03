@@ -55,17 +55,10 @@ class AliceRequest(BaseModel):
         return self.session.application.application_id
 
 
-class LinkButton(BaseModel):
-    title: str = Field(max_length=64)
-    url: str = Field(pattern=r"^https://", max_length=1024)
-    hide: bool = False
-
-
 class Reply(BaseModel):
     text: str
     end_session: bool
     tts: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    buttons: list[LinkButton] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class AliceResponse(BaseModel):

@@ -8,7 +8,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.alice.answers import extract_code, instruction_kind, nothing_needed, yes_or_no
-from pereklichka.alice.schemas import AliceRequest, AliceResponse, LinkButton, Reply
+from pereklichka.alice.schemas import AliceRequest, AliceResponse, Reply
 from pereklichka.bot.reports import ReportService
 from pereklichka.db.repositories import (
     CheckInRepository,
@@ -68,6 +68,12 @@ CAPABILITIES = (
     "Чтобы узнать порядок настройки и команды, скажите: помощь. "
 )
 
+BOT_INSTRUCTION = (
+    "Чтобы открыть бота, перейдите по ссылке в тексте ответа. "
+    "Если ссылка не открывается, скопируйте её в браузер или найдите бота "
+    "в поиске Телеграма по имени, указанному на экране. "
+)
+
 
 class Step(StrEnum):
     CONSENT = "consent"
@@ -98,7 +104,7 @@ class Dialog:
         return await self._check_in(ward, request, state)
 
     def _instruction(
-        self, ward: Ward | None, state: dict[str, Any], kind: Literal["help", "capabilities"]
+        self, ward: Ward | None, state: dict[str, Any], kind: Literal["help", "capabilities", "bot"]
     ) -> AliceResponse:
         if ward is None:
             prompt = (
@@ -113,7 +119,7 @@ class Dialog:
                 Step.MEDS: ASK_MEDS + " Скажите да или нет.",
                 Step.NEEDS: ASK_NEEDS + " Назовите просьбу или скажите: ничего.",
             }.get(state.get("step"), "Как вы себя чувствуете?")
-        description = HELP if kind == "help" else CAPABILITIES
+        description = {"help": HELP, "capabilities": CAPABILITIES, "bot": BOT_INSTRUCTION}[kind]
         return self._guide(description + prompt, state)
 
     async def _link(self, request: AliceRequest, state: dict[str, Any]) -> AliceResponse:
@@ -183,9 +189,12 @@ class Dialog:
     def _guide(text: str, state: dict[str, Any]) -> AliceResponse:
         return AliceResponse(
             response=Reply(
-                text=text + f"\nТелеграм-бот: {BOT_USERNAME}. {BOT_URL}",
+                text=(
+                    text + f"\nТелеграм-бот: {BOT_USERNAME}. {BOT_URL}\n"
+                    "Откройте ссылку или скопируйте её в браузер. "
+                    f"Можно найти бота в Telegram по точному имени {BOT_USERNAME}."
+                ),
                 tts=text + " Бот в поиске Телеграма: Перекличка апп бот, латиницей без пробелов.",
-                buttons=[LinkButton(title="Открыть Telegram-бота", url=BOT_URL)],
                 end_session=False,
             ),
             session_state=state,
