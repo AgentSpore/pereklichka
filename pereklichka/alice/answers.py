@@ -1,5 +1,6 @@
 import re
 from itertools import pairwise
+from typing import Literal
 
 from pereklichka.alice.schemas import Utterance
 
@@ -9,13 +10,17 @@ NEGATION = "не"
 NO = frozenset({"нет", "неа"})
 NOTHING = NO | {NEGATION, "ничего", "мне", "нужно", "надо", "спасибо", "всё", "все", "есть"}
 DIGITS = re.compile(r"\d+")
-HELP_COMMANDS = frozenset({"помощь", "что ты умеешь"})
 
 
-def asks_for_help(request: Utterance) -> bool:
-    """Recognise whole help commands or Alice's built-in help intent."""
+def instruction_kind(request: Utterance) -> Literal["help", "capabilities"] | None:
+    """Exact capabilities command takes precedence over Alice's help intent."""
     words = re.findall(r"\w+", (request.command or request.original_utterance).casefold())
-    return " ".join(words) in HELP_COMMANDS or "YANDEX.HELP" in request.nlu.intents
+    command = " ".join(words)
+    if command == "что ты умеешь":
+        return "capabilities"
+    if command == "помощь" or "YANDEX.HELP" in request.nlu.intents:
+        return "help"
+    return None
 
 
 def extract_code(request: Utterance) -> str | None:

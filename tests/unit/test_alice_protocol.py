@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from pereklichka.alice.answers import asks_for_help, extract_code, yes_or_no
+from pereklichka.alice.answers import extract_code, instruction_kind, yes_or_no
 from pereklichka.alice.schemas import AliceRequest
 from pereklichka.app import create_app
 from pereklichka.config import Settings
@@ -88,10 +88,13 @@ def test_health(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
-@pytest.mark.parametrize("command", ["помощь", "Помощь!", "  ЧТО ТЫ УМЕЕШЬ?  "])
-def test_help_recognises_whole_commands(command: str) -> None:
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [("помощь", "help"), ("Помощь!", "help"), ("  ЧТО ТЫ УМЕЕШЬ?  ", "capabilities")],
+)
+def test_help_recognises_whole_commands(command: str, expected: str) -> None:
     request = AliceRequest.model_validate(utterance(command)).request
-    assert asks_for_help(request)
+    assert instruction_kind(request) == expected
 
 
 def test_help_intent_survives_protocol_validation() -> None:
@@ -99,10 +102,10 @@ def test_help_intent_survives_protocol_validation() -> None:
     body["request"]["nlu"]["intents"] = {"YANDEX.HELP": {"slots": {}}}
     request = AliceRequest.model_validate(body).request
     assert request.nlu.intents == {"YANDEX.HELP": {"slots": {}}}
-    assert asks_for_help(request)
+    assert instruction_kind(request) == "help"
 
 
 def test_help_falls_back_to_original_utterance() -> None:
     body = utterance("")
     body["request"]["original_utterance"] = "Что ты умеешь?"
-    assert asks_for_help(AliceRequest.model_validate(body).request)
+    assert instruction_kind(AliceRequest.model_validate(body).request) == "capabilities"

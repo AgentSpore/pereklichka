@@ -1,14 +1,14 @@
 import hashlib
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pereklichka.alice.answers import asks_for_help, extract_code, nothing_needed, yes_or_no
-from pereklichka.alice.schemas import AliceRequest, AliceResponse, Reply
+from pereklichka.alice.answers import extract_code, instruction_kind, nothing_needed, yes_or_no
+from pereklichka.alice.schemas import AliceRequest, AliceResponse, LinkButton, Reply
 from pereklichka.bot.reports import ReportService
 from pereklichka.db.repositories import (
     CheckInRepository,
@@ -19,13 +19,19 @@ from pereklichka.db.repositories import (
 from pereklichka.domain.checkin import CheckIn
 from pereklichka.domain.family import LinkCode, Ward
 
+BOT_USERNAME = "@PereklichkaAppBot"
+BOT_URL = "https://t.me/PereklichkaAppBot"
 INTRO = (
     "Семейная перекличка спрашивает о самочувствии, лекарствах и просьбах. "
-    "После вашего согласия ответы передаются родным в Телеграм. "
+    "После вашего согласия ответы передаются родным в личных сообщениях через "
+    "Телеграм-бота Переклички. "
+)
+BOT_SETUP = (
+    "Откройте бота на телефоне. Нажмите Начать, чтобы создать семью, затем Добавить близкого. "
+    "В карточке близкого нажмите Привязать колонку и получите шестизначный код. "
 )
 HOW_TO_LINK = (
-    "Здравствуйте! " + INTRO + "Чтобы привязать колонку, скажите: "
-    "привязать код, затем назовите шесть цифр из бота Переклички в Телеграм. "
+    "Здравствуйте! " + INTRO + BOT_SETUP + "Здесь скажите: привязать код, затем шесть цифр. "
     "Для инструкции скажите: помощь."
 )
 BAD_CODE = "Этот код не подошёл или устарел. Попросите у родных новый код и назовите его снова."
@@ -47,11 +53,19 @@ ASK_MEDS = "Лекарства сегодня приняли?"
 ASK_NEEDS = "Нужно ли вам что-нибудь?"
 GOODBYE = "Спасибо! Я всё передам родным. Хорошего вам дня!"
 HELP = (
-    INTRO + "Для привязки скажите: привязать код, затем шесть цифр из бота Переклички. "
+    "Как пользоваться Семейной перекличкой. "
+    + BOT_SETUP
+    + "Для привязки скажите: привязать код, затем шесть цифр из бота. "
     "На вопрос о согласии и лекарствах отвечайте да или нет. "
-    "Самочувствие и просьбы описывайте своими словами. Если ничего не нужно, скажите: ничего. "
-    "Команды помощь и что ты умеешь повторят инструкцию. "
+    "На вопросы о самочувствии и просьбах отвечайте своими словами. "
+    "Если ничего не нужно, скажите: ничего. "
+    "Команда помощь объясняет настройку, а что ты умеешь описывает возможности. "
     "Для выхода скажите: Алиса, хватит. Разговор запускаете вы сами. "
+)
+CAPABILITIES = (
+    INTRO + "Вы запускаете навык и отвечаете на три вопроса, а семья получает отчёт. "
+    "Бот предупреждает родственников, если отметки нет к выбранному времени. "
+    "Чтобы узнать порядок настройки и команды, скажите: помощь. "
 )
 
 
@@ -76,13 +90,16 @@ class Dialog:
     async def reply(self, request: AliceRequest) -> AliceResponse:
         state = {} if request.session.new else request.state.session
         ward = await self._wards.by_device(request.device_id)
-        if asks_for_help(request.request):
-            return self._help(ward, state)
+        kind = instruction_kind(request.request)
+        if kind is not None:
+            return self._instruction(ward, state, kind)
         if ward is None:
             return await self._link(request, state)
         return await self._check_in(ward, request, state)
 
-    def _help(self, ward: Ward | None, state: dict[str, Any]) -> AliceResponse:
+    def _instruction(
+        self, ward: Ward | None, state: dict[str, Any], kind: Literal["help", "capabilities"]
+    ) -> AliceResponse:
         if ward is None:
             prompt = (
                 SAY_YES_OR_NO
@@ -96,16 +113,15 @@ class Dialog:
                 Step.MEDS: ASK_MEDS + " Скажите да или нет.",
                 Step.NEEDS: ASK_NEEDS + " Назовите просьбу или скажите: ничего.",
             }.get(state.get("step"), "Как вы себя чувствуете?")
-        return AliceResponse(
-            response=Reply(text=HELP + prompt, end_session=False), session_state=state
-        )
+        description = HELP if kind == "help" else CAPABILITIES
+        return self._guide(description + prompt, state)
 
     async def _link(self, request: AliceRequest, state: dict[str, Any]) -> AliceResponse:
         if state.get("step") == Step.CONSENT:
             return await self._consent(request, state["code"])
         code = extract_code(request.request)
         if code is None:
-            return self._say(HOW_TO_LINK)
+            return self._guide(HOW_TO_LINK, {})
         if await self._too_many_failures(request.device_id):
             return self._say(TOO_MANY_ATTEMPTS, end=True)
         if await self._codes.find_active(code, self._now) is None:
@@ -161,7 +177,19 @@ class Dialog:
                 needs = None if nothing_needed(request.request) else text
                 await self._reports.complete(UUID(state["checkin"]), ward, needs)
                 return self._say(GOODBYE, end=True)
-        return self._say(GREETING.format(name=ward.name), step=Step.WELLBEING)
+        return self._guide(GREETING.format(name=ward.name), {"step": Step.WELLBEING})
+
+    @staticmethod
+    def _guide(text: str, state: dict[str, Any]) -> AliceResponse:
+        return AliceResponse(
+            response=Reply(
+                text=text + f"\nТелеграм-бот: {BOT_USERNAME}. {BOT_URL}",
+                tts=text + " Бот в поиске Телеграма: Перекличка апп бот, латиницей без пробелов.",
+                buttons=[LinkButton(title="Открыть Telegram-бота", url=BOT_URL)],
+                end_session=False,
+            ),
+            session_state=state,
+        )
 
     @staticmethod
     def _say(text: str, *, end: bool = False, **state: Any) -> AliceResponse:
