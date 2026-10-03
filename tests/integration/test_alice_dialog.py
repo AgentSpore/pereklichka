@@ -316,7 +316,11 @@ async def test_help_preserves_each_stage_without_writes(
     assert reply["response"]["end_session"] is False
     text = reply["response"]["text"]
     assert "самочувствии" in text and "лекарствах" in text and "просьбах" in text
-    assert "помощь" in text and "что ты умеешь" in text and "привязать код" in text
+    assert "помощь" in text
+    if command == "Что ты умеешь":
+        assert "если отметки нет" in text
+    else:
+        assert "что ты умеешь" in text and "привязать код" in text
     prompts = {
         "unknown": "привязать код",
         "consent": "да или нет",
@@ -377,3 +381,52 @@ async def test_free_answer_containing_help_is_saved(
     await say(client, utterance(command, state=needs["session_state"]))
     [checkin] = await CheckInRepository(session).for_ward(ward.id)
     assert checkin.wellbeing == command and checkin.needs == command
+
+
+@pytest.mark.parametrize("linked", [False, True])
+async def test_welcome_identifies_the_bot_with_accessible_link(
+    client: AsyncClient, session: AsyncSession, ward: Ward, linked: bool
+) -> None:
+    if linked:
+        await WardRepository(session).link_device(
+            ward.id, APPLICATION_ID, datetime.now(UTC), CONSENT_VERSION
+        )
+        await session.commit()
+    before = await dialog_rows(session)
+    reply = await say(client, utterance("", new=True))
+    response = reply["response"]
+    assert "@PereklichkaAppBot" in response["text"]
+    assert "https://t.me/PereklichkaAppBot" in response["text"]
+    assert response["buttons"] == [
+        {"title": "Открыть Telegram-бота", "url": "https://t.me/PereklichkaAppBot", "hide": False}
+    ]
+    assert "Перекличка апп бот" in response["tts"]
+    assert "https://" not in response["tts"]
+    assert len(response["text"]) <= 1024 and len(response["tts"]) <= 1024
+    assert await dialog_rows(session) == before
+
+
+async def test_help_and_capabilities_are_distinct_at_each_stage(
+    client: AsyncClient, session: AsyncSession, dialog_stage: tuple[str, dict]
+) -> None:
+    stage, state = dialog_stage
+    before = await dialog_rows(session)
+    help_body = utterance("Помощь", state=state, new=stage in {"unknown", "start"})
+    capabilities_body = utterance("Что ты умеешь", state=state, new=stage in {"unknown", "start"})
+    help_reply = await say(client, help_body)
+    capabilities_reply = await say(client, capabilities_body)
+    capabilities_body["request"]["nlu"]["intents"] = {"YANDEX.HELP": {"slots": {}}}
+    with_intent = await say(client, capabilities_body)
+    assert help_reply["response"]["text"] != capabilities_reply["response"]["text"]
+    assert with_intent["response"] == capabilities_reply["response"]
+    assert help_reply["session_state"] == capabilities_reply["session_state"]
+    assert await dialog_rows(session) == before
+    assert "Добавить близкого" in help_reply["response"]["text"]
+    assert "если отметки нет" in capabilities_reply["response"]["text"]
+    for reply in [help_reply, capabilities_reply]:
+        response = reply["response"]
+        assert "@PereklichkaAppBot" in response["text"]
+        assert response["buttons"][0]["url"] == "https://t.me/PereklichkaAppBot"
+        assert "Перекличка апп бот" in response["tts"]
+        assert "https://" not in response["tts"]
+        assert len(response["text"]) <= 1024 and len(response["tts"]) <= 1024
