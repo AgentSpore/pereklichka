@@ -109,3 +109,17 @@ def test_help_falls_back_to_original_utterance() -> None:
     body = utterance("")
     body["request"]["original_utterance"] = "Что ты умеешь?"
     assert instruction_kind(AliceRequest.model_validate(body).request) == "capabilities"
+
+
+@pytest.mark.parametrize("command", ["Открыть Telegram-бота", "  ОТКРЫТЬ TELEGRAM-БОТА!  "])
+def test_exact_legacy_bot_button_is_an_instruction(command: str) -> None:
+    body = utterance(command)
+    body["request"]["nlu"]["intents"] = {"YANDEX.HELP": {"slots": {}}}
+    assert instruction_kind(AliceRequest.model_validate(body).request) == "bot"
+
+
+def test_payload_only_button_event_is_not_a_health_answer() -> None:
+    body = utterance("")
+    # Official synthetic ButtonPressed form; the user's actual request type was not captured.
+    body["request"] = {"type": "ButtonPressed", "payload": {"action": "unsupported"}}
+    assert instruction_kind(AliceRequest.model_validate(body).request) == "bot"

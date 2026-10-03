@@ -12,10 +12,12 @@ NOTHING = NO | {NEGATION, "ничего", "мне", "нужно", "надо", "�
 DIGITS = re.compile(r"\d+")
 
 
-def instruction_kind(request: Utterance) -> Literal["help", "capabilities"] | None:
-    """Exact capabilities command takes precedence over Alice's help intent."""
+def instruction_kind(request: Utterance) -> Literal["help", "capabilities", "bot"] | None:
+    """Recognise whole instructions; button events must never become check-in answers."""
     words = re.findall(r"\w+", (request.command or request.original_utterance).casefold())
     command = " ".join(words)
+    if request.type == "ButtonPressed" or command == "открыть telegram бота":
+        return "bot"
     if command == "что ты умеешь":
         return "capabilities"
     if command == "помощь" or "YANDEX.HELP" in request.nlu.intents:
