@@ -1,12 +1,13 @@
 from datetime import date, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.db.models import CheckInRow, RelativeRow, WardRow
 from pereklichka.db.models import SilenceAlertRow as SilenceAlertRow
 from pereklichka.db.outbox import OutboxRepository
+from pereklichka.domain.family import MODERATION_PREFIX
 
 
 class AlertRepository:
@@ -19,7 +20,17 @@ class AlertRepository:
         self._outbox = OutboxRepository(session)
 
     async def wards(self, after: UUID | None) -> list[WardRow]:
-        query = select(WardRow).order_by(WardRow.id).limit(self.BATCH_SIZE)
+        query = (
+            select(WardRow)
+            .where(
+                or_(
+                    WardRow.consent_version.is_(None),
+                    WardRow.consent_version.not_like(MODERATION_PREFIX + "%"),
+                )
+            )
+            .order_by(WardRow.id)
+            .limit(self.BATCH_SIZE)
+        )
         if after is not None:
             query = query.where(WardRow.id > after)
         rows = await self._session.scalars(query.with_for_update(skip_locked=True))
