@@ -12,7 +12,9 @@ class ModerationRepository:
         self._session = session
 
     async def ready(self, family_id: UUID, recipient: int) -> bool:
-        family = await self._session.scalar(select(FamilyRow.id).where(FamilyRow.id == family_id))
+        family = await self._session.scalar(
+            select(FamilyRow.id).where(FamilyRow.id == family_id).with_for_update()
+        )
         if family is None:
             return False
         recipients = list(

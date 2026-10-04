@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pereklichka.app import create_app
 from pereklichka.config import Settings
 from pereklichka.db.models import CheckInRow, LinkCodeRow, OutboxRow, RelativeRow, WardRow
+from pereklichka.db.moderation import ModerationRepository
 from pereklichka.db.relatives import RelativeRepository
 from pereklichka.db.repositories import FamilyRepository, WardRepository
 from pereklichka.domain.family import Family, Ward
@@ -192,3 +193,47 @@ async def test_test_access_never_overwrites_real_binding_or_membership(moderatio
     assert found == ward
     assert list((await session.execute(select(RelativeRow.id))).scalars()) == members
     assert list((await session.execute(select(WardRow.id))).scalars()) == [ward.id]
+
+
+async def test_completion_locks_recipients_until_report_commit(
+    moderation_app, moderation_client, session, monkeypatch
+):
+    asked = (await moderation_client.post("/alice", json=utterance(f"привязать код {CODE}"))).json()
+    await moderation_client.post("/alice", json=utterance("да", state=asked["session_state"]))
+    state = {"step": "wellbeing"}
+    for answer in ["хорошо", "да"]:
+        reply = await moderation_client.post("/alice", json=utterance(answer, state=state))
+        state = reply.json()["session_state"]
+    checked, release = asyncio.Event(), asyncio.Event()
+    original = ModerationRepository.ready
+
+    async def paused_ready(repository, family_id, recipient):
+        ready = await original(repository, family_id, recipient)
+        checked.set()
+        await release.wait()
+        return ready
+
+    async def add_unexpected_recipient():
+        async with moderation_app.state.sessionmaker() as concurrent:
+            await RelativeRepository(concurrent).add_member(
+                moderation_app.state.settings.moderation_family_id, 202
+            )
+            await concurrent.commit()
+
+    monkeypatch.setattr(ModerationRepository, "ready", paused_ready)
+    async with asyncio.TaskGroup() as group:
+        completion = group.create_task(
+            moderation_client.post("/alice", json=utterance("ничего", state=state))
+        )
+        await asyncio.wait_for(checked.wait(), timeout=5)
+        addition = group.create_task(add_unexpected_recipient())
+        try:
+            await asyncio.wait_for(asyncio.shield(addition), timeout=0.2)
+            blocked = False
+        except TimeoutError:
+            blocked = True
+        finally:
+            release.set()
+    assert completion.result().status_code == 200
+    assert {r.chat_id for r in (await session.execute(select(OutboxRow))).scalars()} == {CHAT}
+    assert blocked, "Membership mutation must wait for the report transaction"
