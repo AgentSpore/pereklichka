@@ -24,7 +24,9 @@ async def alice(
         raise HTTPException(status.HTTP_403_FORBIDDEN)
     if body.request.original_utterance == "ping":
         return AliceResponse(response=Reply(text="ok", end_session=True))
-    reply = await Dialog(session, now=datetime.now(UTC)).reply(body)
+    reply = await Dialog(session, now=datetime.now(UTC), settings=request.app.state.settings).reply(
+        body
+    )
     # INVARIANT: commit before answering — a yield-dependency commits after the response is sent,
     # so a lost write would still be announced to the speaker as saved.
     await session.commit()

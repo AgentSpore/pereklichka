@@ -8,8 +8,11 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pereklichka.alice.answers import extract_code, instruction_kind, nothing_needed, yes_or_no
+from pereklichka.alice.moderation import CLOSED, ModerationAccess
+from pereklichka.alice.moderation import CONSENT as MODERATION_CONSENT
 from pereklichka.alice.schemas import AliceRequest, AliceResponse, Reply
 from pereklichka.bot.reports import ReportService
+from pereklichka.config import Settings
 from pereklichka.db.repositories import (
     CheckInRepository,
     LinkAttemptRepository,
@@ -17,7 +20,7 @@ from pereklichka.db.repositories import (
     WardRepository,
 )
 from pereklichka.domain.checkin import CheckIn
-from pereklichka.domain.family import LinkCode, Ward
+from pereklichka.domain.family import MODERATION_CODE, LinkCode, Ward
 
 BOT_USERNAME = "@PereklichkaAppBot"
 BOT_URL = "https://t.me/PereklichkaAppBot"
@@ -85,7 +88,10 @@ class Step(StrEnum):
 class Dialog:
     """One webhook turn: linking an unknown speaker, or the morning check-in of a known one."""
 
-    def __init__(self, session: AsyncSession, now: datetime) -> None:
+    def __init__(
+        self, session: AsyncSession, now: datetime, settings: Settings | None = None
+    ) -> None:
+        self._moderation = ModerationAccess(session, settings, now)
         self._wards = WardRepository(session)
         self._codes = LinkCodeRepository(session)
         self._attempts = LinkAttemptRepository(session)
@@ -96,6 +102,12 @@ class Dialog:
     async def reply(self, request: AliceRequest) -> AliceResponse:
         state = {} if request.session.new else request.state.session
         ward = await self._wards.by_device(request.device_id)
+        if (
+            ward is not None
+            and self._moderation.owns(ward)
+            and not await self._moderation.permits(ward)
+        ):
+            return self._say(CLOSED, end=True)
         kind = instruction_kind(request.request)
         if kind is not None:
             return self._instruction(ward, state, kind)
@@ -130,6 +142,10 @@ class Dialog:
             return self._guide(HOW_TO_LINK, {})
         if await self._too_many_failures(request.device_id):
             return self._say(TOO_MANY_ATTEMPTS, end=True)
+        if code == MODERATION_CODE:
+            if await self._moderation.available():
+                return self._say(MODERATION_CONSENT, step=Step.CONSENT, code=code)
+            return self._say(CLOSED, end=True)
         if await self._codes.find_active(code, self._now) is None:
             await self._record_failure(request.device_id)
             return self._say(BAD_CODE)
@@ -158,6 +174,9 @@ class Dialog:
             return self._say(SAY_YES_OR_NO, step=Step.CONSENT, code=code)
         if not answer:
             return self._say(DECLINED, end=True)
+        if code == MODERATION_CODE:
+            ward = await self._moderation.link(request.device_id)
+            return self._say(LINKED if ward is not None else CLOSED, end=True)
         ward_id = await self._codes.consume(code, self._now)
         if ward_id is None:
             return self._say(BAD_CODE, end=True)

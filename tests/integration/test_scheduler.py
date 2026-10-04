@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from pereklichka.db.alerts import SilenceAlertRow
+from pereklichka.db.alerts import AlertRepository, SilenceAlertRow
 from pereklichka.db.models import CheckInRow, FamilyRow, OutboxRow, RelativeRow, WardRow
 from pereklichka.db.outbox import OutboxRepository
 from pereklichka.scheduler.runner import SilenceScheduler
@@ -274,3 +274,24 @@ async def test_before_deadline_does_not_create_yesterday_initial_alert(sessionma
     await SilenceScheduler(sessionmaker).tick(NOW - timedelta(minutes=1))
     async with sessionmaker() as session:
         assert list(await session.scalars(select(SilenceAlertRow))) == []
+
+
+async def test_scheduler_excludes_moderation_but_keeps_null_and_normal_versions(
+    session, linked_ward
+):
+    versions = [None, "ordinary", "moderation:future-version"]
+    wards = [
+        WardRow(
+            id=uuid4(),
+            family_id=linked_ward.family_id,
+            name="Synthetic",
+            checkin_hour=9,
+            timezone="Europe/Moscow",
+            consent_version=version,
+        )
+        for version in versions
+    ]
+    session.add_all(wards)
+    await session.flush()
+    eligible = await AlertRepository(session).wards(None)
+    assert {w.id for w in eligible} == {linked_ward.id, wards[0].id, wards[1].id}

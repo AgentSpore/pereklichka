@@ -1,3 +1,6 @@
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -123,3 +126,37 @@ def test_payload_only_button_event_is_not_a_health_answer() -> None:
     # Official synthetic ButtonPressed form; the user's actual request type was not captured.
     body["request"] = {"type": "ButtonPressed", "payload": {"action": "unsupported"}}
     assert instruction_kind(AliceRequest.model_validate(body).request) == "bot"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"moderation_family_id": uuid4()},
+        {
+            "moderation_family_id": uuid4(),
+            "moderation_recipient_chat_id": 123,
+            "moderation_until": datetime.now(UTC),
+        },
+        {
+            "moderation_family_id": uuid4(),
+            "moderation_recipient_chat_id": -123,
+            "moderation_until": datetime.now(),
+        },
+    ],
+)
+def test_invalid_moderation_configuration_is_rejected(overrides) -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            database_url="postgresql+asyncpg://unused@localhost:1/x", skill_id=SKILL_ID, **overrides
+        )
+
+
+def test_expired_moderation_configuration_does_not_prevent_startup() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://unused@localhost:1/x",
+        skill_id=SKILL_ID,
+        moderation_family_id=uuid4(),
+        moderation_recipient_chat_id=-123,
+        moderation_until=datetime.now(UTC) - timedelta(days=1),
+    )
+    assert settings.moderation_until is not None

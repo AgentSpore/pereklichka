@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
+MODERATION_CODE = "814527"  # Public synthetic access identifier, never a family link code.
+MODERATION_PREFIX = "moderation:"
+
 
 @dataclass(frozen=True)
 class Family:
@@ -49,6 +52,6 @@ class LinkCode:
 
     @classmethod
     def issue(cls, ward_id: UUID, now: datetime) -> Self:
-        return cls(
-            ward_id=ward_id, code=f"{secrets.randbelow(10**6):06d}", expires_at=now + cls.TTL
-        )
+        number = secrets.randbelow(10**6 - 1)
+        number += number >= int(MODERATION_CODE)
+        return cls(ward_id=ward_id, code=f"{number:06d}", expires_at=now + cls.TTL)
