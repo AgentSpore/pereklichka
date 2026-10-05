@@ -41,6 +41,9 @@ async def command(
     words = value.split(maxsplit=1) or [""]
     name = words[0].split("@")[0].removeprefix("/")
     args = words[1] if len(words) == 2 else ""
+    if value.startswith("/") and name == "privacy":
+        await message.answer(texts.PRIVACY, reply_markup=presentation.menu())
+        return
     async with sessionmaker() as session, session.begin():
         service = FamilyService(session, message.chat.id, datetime.now(UTC))
         if not value.startswith("/") and await state.get_state():
