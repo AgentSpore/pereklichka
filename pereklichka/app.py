@@ -4,6 +4,7 @@ from pereklichka.alice.router import router as alice_router
 from pereklichka.bot.runtime import lifespan
 from pereklichka.config import Settings
 from pereklichka.db.session import create_sessionmaker
+from pereklichka.privacy import router as privacy_router
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -11,6 +12,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     app.state.sessionmaker = create_sessionmaker(settings.database_url)
     app.include_router(alice_router)
+    app.include_router(privacy_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

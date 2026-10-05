@@ -1,3 +1,10 @@
+from pereklichka.privacy import OPERATOR_CONTACT, PRIVACY_URL
+
+PRIVACY = (
+    f"Политика конфиденциальности: {PRIVACY_URL}\n"
+    f"Вопросы, отзыв согласия и удаление данных: {OPERATOR_CONTACT}"
+)
+
 HELP = (
     "Перекличка: отметки родных через Алису.\n"
     "/ward Имя | час 0–23 | Europe/Moscow: добавить подопечного\n"
@@ -110,3 +117,6 @@ RELATIVES_TITLE = "<b>Родственники</b>\n\nПорядок опове�
 SELF = "Вы"
 RELATIVE = "Родственник {number}"
 CREATED = "Близкий добавлен. Теперь привяжите колонку.\n\n"
+
+HELP += "\n/privacy: политика и контакт владельца\n" + PRIVACY
+UX_HELP += "\n\n" + PRIVACY
