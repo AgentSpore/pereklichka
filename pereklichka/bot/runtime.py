@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from fastapi import FastAPI
 
+from pereklichka.bot.observability import install_framework_logging
 from pereklichka.bot.router import create_dispatcher
 from pereklichka.bot.worker import DeliveryWorker
 from pereklichka.config import Settings
@@ -29,6 +30,7 @@ async def stop_polling(dispatcher: Dispatcher, polling: asyncio.Task) -> None:
 
 async def run_polling(dispatcher: Dispatcher, bot: Bot) -> None:
     """Shield aiogram's wrapper so its own stop signal cleans up internal polling tasks."""
+    install_framework_logging()
     dispatcher.shutdown.register(drain_handlers)
     polling = asyncio.create_task(
         dispatcher.start_polling(
