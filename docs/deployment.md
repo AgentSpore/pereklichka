@@ -138,3 +138,21 @@ endpoint отвечает HTTP `501`. Стенд запущен через SSH:
 Резервную копию создаёт оператор через `pg_dump`, хранит вне сервера
 и периодически проверяет восстановление. Файлы с данными семьи не кладите
 в репозиторий. Продакшен с живыми данными требует хостинга в РФ согласно спеке.
+
+## Telegram operational events
+
+The bot emits Loguru messages containing bounded JSON technical events.
+`telegram.update` records `update_type` (`message`, `callback`, `other`),
+`outcome` (`handled`, `unhandled`, `error`, `cancelled`), elapsed `duration_ms`
+(capped at one hour), and a finite `error_class`. Counts grouped by these labels
+measure technical updates, not unique people or completed business actions.
+
+Raw `aiogram.event` and `aiogram.dispatcher` messages are replaced before logging
+handlers run. WARNING/ERROR records remain visible as safe `telegram.framework`
+or `telegram.polling` events; their duration is unknown (`null`). INFO framework
+records containing identifiers are omitted; update outcomes have their own event.
+No Telegram IDs, message/callback text, exception values or tracebacks are copied.
+This policy does not change unrelated loggers or claim to sanitize every other
+application log. Docker captures process streams according to its configured
+logging driver; verify rotation and retention on deployment. No database change
+is needed; rebuild the application image to include this code.

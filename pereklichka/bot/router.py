@@ -10,16 +10,19 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pereklichka.bot import flows, presentation, texts
+from pereklichka.bot.observability import UpdateLogMiddleware, install_framework_logging
 from pereklichka.bot.schemas import Screen
 from pereklichka.bot.service import FamilyService
 
 
 def create_dispatcher(sessionmaker: async_sessionmaker[AsyncSession], username: str) -> Dispatcher:
     """Serialize each user's draft and keep database commits ahead of Telegram sends."""
+    install_framework_logging()
     router = Router()
     router.message.register(command)
     router.callback_query.register(callback)
     dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
+    dispatcher.update.outer_middleware(UpdateLogMiddleware())
     dispatcher["sessionmaker"] = sessionmaker
     dispatcher["username"] = username
     dispatcher.include_router(router)
