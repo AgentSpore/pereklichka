@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from aiogram import Bot, Dispatcher
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 from loguru import logger
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -149,3 +150,20 @@ def test_framework_filter_does_not_suppress_other_loggers(records, caplog):
     logging.getLogger("unrelated.operational.logger").warning("unrelated-visible")
     assert "unrelated-visible" in caplog.text
     assert records == []
+
+
+async def test_unknown_future_update_is_unhandled_without_payload_warning(records, recwarn, capfd):
+    dispatcher = create_dispatcher(async_sessionmaker(), "synthetic_bot")
+    bot = Bot("123456:" + "a" * 35)
+    update = Update(update_id=987654321, future_update={"text": MARKER})
+    try:
+        response = await dispatcher.feed_update(bot, update)
+    finally:
+        await bot.session.close()
+    assert response is UNHANDLED
+    assert not recwarn.list
+    assert len(records) == 1
+    event = json.loads(records[0])
+    assert event["update_type"] == "other" and event["outcome"] == "unhandled"
+    captured = "".join(records) + "".join(capfd.readouterr())
+    assert MARKER not in captured and "987654321" not in captured

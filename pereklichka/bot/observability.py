@@ -11,6 +11,7 @@ from aiogram import BaseMiddleware
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import TelegramObject, Update
+from aiogram.types.update import UpdateTypeLookupError
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -57,16 +58,17 @@ class UpdateLogMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         kind, outcome, error = "other", "error", "none"
-        if isinstance(event, Update):
-            kind = (
-                "message"
-                if event.message is not None
-                else "callback"
-                if event.callback_query is not None
-                else "other"
-            )
         started = time.monotonic()
         try:
+            if isinstance(event, Update):
+                try:
+                    update_type = event.event_type
+                except UpdateTypeLookupError:
+                    outcome = "unhandled"
+                    return UNHANDLED
+                kind = {"message": "message", "callback_query": "callback"}.get(
+                    update_type, "other"
+                )
             result = await handler(event, data)
             outcome = "unhandled" if result is UNHANDLED else "handled"
             return result
