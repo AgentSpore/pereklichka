@@ -53,5 +53,13 @@ def yes_or_no(request: Utterance) -> bool | None:
 
 
 def nothing_needed(request: Utterance) -> bool:
-    words = set(request.nlu.tokens or request.command.split())
+    tokens = request.nlu.tokens or request.command.split()
+    words = set(tokens)
+    if words & {"нужно", "надо"} and "ничего" not in words:
+        negated_need = any(
+            previous == NEGATION and word in {"нужно", "надо"}
+            for previous, word in pairwise(["", *tokens])
+        )
+        if not negated_need:
+            return False
     return not words or words <= NOTHING
